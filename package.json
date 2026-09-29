@@ -1,0 +1,35 @@
+{
+  "name": "codegraph-view",
+  "version": "1.1.0",
+  "description": "CodeGraph CLI + 交互式调用关系可视化（codegraph 全部命令 + view 子命令）",
+  "type": "module",
+  "bin": {
+    "cgv": "bin/cgv.mjs",
+    "codegraph-view": "bin/cgv.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "e2e": "node scripts/e2e.mjs"
+  },
+  "keywords": [
+    "codegraph",
+    "call-graph",
+    "code-visualization",
+    "call-chain",
+    "code-analysis"
+  ],
+  "dependencies": {
+    "@colbymchenry/codegraph": "1.5.0"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "server.mjs",
+    "public",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

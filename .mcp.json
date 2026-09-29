@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "cmd",
+      "args": [
+        "/C",
+        "codegraph",
+        "serve",
+        "--mcp"
+      ],
+      "env": {},
+      "disabled": false
+    },
+    "chrome-devtools": {
+      "command": "cmd",
+      "args": [
+        "/C",
+        "npx",
+        "-y",
+        "chrome-devtools-mcp@latest",
+        "--autoConnect"
+      ],
+      "disabled": false
+    }
+  }
+}

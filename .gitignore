@@ -1,0 +1,5 @@
+node_modules/
+*.tgz
+backups/
+.check-*.js
+.DS_Store
