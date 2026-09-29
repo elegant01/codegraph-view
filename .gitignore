@@ -3,3 +3,7 @@ node_modules/
 backups/
 .check-*.js
 .DS_Store
+.cgv*.log
+.atomcode/
+.claude/
+.mcp.json
