@@ -458,6 +458,24 @@ $('#btnCopySrc').onclick = () => {
   copyText(m ? m[1] : curSource.raw, '已复制源码');
 };
 $('#btnCopyPath').onclick = () => copyText(curSource.file || curSource.symbol, '已复制路径');
+$('#btnImplementations').onclick = async () => {
+  if (!curSource.symbol) { notice('当前没有可查询的接口或抽象方法'); return; }
+  showPanel('results');
+  $('#resultsTitle').textContent = '⇉ 实现列表';
+  $('#resultsSub').textContent = `正在查找「${curSource.symbol}」的实现…`;
+  $('#resultsBody').innerHTML = '<div class="hit">⏳ 查询实现类/实现方法…</div>';
+  try {
+    const hits = await api('/implementations', { symbol: curSource.symbol, file: curSource.file });
+    $('#resultsSub').textContent = `「${curSource.symbol}」找到 ${hits.length} 个候选实现`;
+    $('#resultsBody').innerHTML = hits.length ? hits.map(h =>
+      `<div class="hit" data-symbol="${escAttr(h.qualifiedName || h.name)}" data-name="${escAttr(h.name)}" data-file="${escAttr(h.filePath)}">
+        <div class="row1">${badge(h.kind)}<span class="nm" title="${escAttr(h.qualifiedName || h.name)}">${esc(h.qualifiedName || h.name)}</span><span class="trace-btn" title="展开该实现的调用链">⧉ 链路</span></div>
+        <div class="meta">${esc(h.filePath || '')}${h.startLine ? ':' + h.startLine : ''}</div>
+      </div>`).join('') : '<div class="hit">未找到实现；请确认已建立最新 codegraph 索引。</div>';
+    bindHits($('#resultsBody'));
+    updateHeaderInfo(`实现：${hits.length} 个候选`);
+  } catch (e) { $('#resultsBody').innerHTML = `<div class="hit">查询实现失败：${esc(e.message)}</div>`; }
+};
 
 // 把一次 /api/graph 结果并入图模型（过滤 import 引用与类型节点，保持图干净）
 function isImportRef(name) { return /^(@\/|\.\/|\.\.\/|\/|node:)/.test(name); }
@@ -695,7 +713,7 @@ function layoutGraph() {
   const byLayer = new Map();
   for (const [k, L] of layerOf) { if (!byLayer.has(L)) byLayer.set(L, []); byLayer.get(L).push(k); }
   const pos = new Map();
-  const CX = 0, CY = 0, colW = 250, rowH = 56;
+  const CX = 0, CY = 0, colW = hotspotMode ? 290 : 250, rowH = hotspotMode ? 68 : 56;
   const order = [...byLayer.keys()].sort((a, b) => Math.abs(a) - Math.abs(b) || a - b);
   const innerY = (k, innerL) => {
     if (innerL == null) return CY;
@@ -803,9 +821,12 @@ function relayout() {
 function mkNode(node, p) {
   const label = node.label;
   const w = Math.min(220, Math.max(96, label.length * 7 + 30));
+  const indegree = callersOf(node.key).length;
+  const hotspot = hotspotMode ? Math.min(1, indegree / 8) : 0;
+  const h = 38 + Math.round(hotspot * 14);
   const cls = nodeClass(node, p.layer) + (node.expanded || node.key === graph.centerKey ? '' : ' leaf');
   const grp = g('g', { 'class': 'node ' + cls, style: `--tx:${p.x}px; --ty:${p.y}px`, 'data-key': node.key });
-  grp.appendChild(g('rect', { x: -w / 2, y: -19, width: w, height: 38 }));
+  grp.appendChild(g('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: hotspot ? 5 : 0 }));
   const t = g('text', { x: 0, y: 4, 'text-anchor': 'middle' });
   t.textContent = label.length > 24 ? label.slice(0, 23) + '…' : label;
   grp.appendChild(t);
@@ -936,6 +957,13 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtx();
 // ===== 路径查找：依次点两个节点，BFS 有向最短路径并高亮（Esc/再点按钮退出） =====
 const pathHL = { nodes: new Set(), edges: new Set() };
 let pathMode = false;
+let hotspotMode = false;
+$('#btnHotspot').onclick = () => {
+  hotspotMode = !hotspotMode;
+  $('#btnHotspot').classList.toggle('active', hotspotMode);
+  relayout();
+  notice(hotspotMode ? '热点视图：节点大小按入度映射' : '已关闭热点视图');
+};
 let pathSrcKey = null;
 function clearPath() {
   pathMode = false; pathSrcKey = null;

@@ -190,6 +190,30 @@ const server = createServer(async (req, res) => {
       const callees = parseJson(calleesRaw, {}).callees || [];
       return json(req, res, 200, { symbol: sym, callers, callees, source: nodeRaw });
     }
+    // 查找接口/抽象方法的实现：查询同名候选，返回 class/method/function 实现项
+    if (path === '/api/implementations') {
+      const sym = safeArg(url.searchParams.get('symbol'));
+      if (!sym) return json(req, res, 400, { error: 'missing ?symbol=' });
+      const file = safeFile((url.searchParams.get('file') || '').trim());
+      const short = sym.split(/::|\\/).pop();
+      const queries = [...new Set([sym, short])];
+      const found = new Map();
+      for (const q of queries) {
+        try {
+          const list = parseJson(await run(['query', q, '--json', '-l', '200']), []);
+          for (const row of list) {
+            const n = row && row.node;
+            if (!n || !n.name || !['class', 'method', 'function', 'interface'].includes(n.kind)) continue;
+            if (file && n.filePath === file && n.name === short) continue;
+            const text = `${n.name} ${n.qualifiedName || ''}`.toLowerCase();
+            if (!text.includes(short.toLowerCase())) continue;
+            const key = `${n.filePath || ''}::${n.qualifiedName || n.name}`;
+            found.set(key, { name: n.name, qualifiedName: n.qualifiedName || n.name, kind: n.kind, filePath: n.filePath || '', startLine: n.startLine || null });
+          }
+        } catch { /* 未初始化或查询失败时返回空实现列表 */ }
+      }
+      return json(req, res, 200, [...found.values()].slice(0, 100));
+    }
     // 列出所有路由（接口发现面板；Laravel + Go beego/gin 合并）
     if (path === '/api/routes') {
       const [php, go] = await Promise.all([routeParser.parseLaravelRoutes(), routeParser.parseGoRoutes()]);

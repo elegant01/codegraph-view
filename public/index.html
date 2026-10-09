@@ -97,6 +97,7 @@
     <div id="graphControls">
       <button id="btnTraceUp" class="secondary" title="以当前中心为终点，向上递归展开「谁调用了它」的全部链路">⇈ 上游链</button>
       <button id="btnPath" class="secondary" title="路径查找：依次点击两个节点，高亮它们之间的调用路径（Esc 退出）">⇢ 路径</button>
+      <button id="btnHotspot" class="secondary" title="热点视图：按入度放大被频繁调用的节点">🔥 热点</button>
       <button id="zoomIn" title="放大">＋</button>
       <button id="zoomOut" title="缩小">－</button>
       <button id="zoomReset" title="重置视图">⟲</button>
@@ -118,6 +119,7 @@
     <div class="panel-head"><h3 id="srcTitle">📄 源码</h3><div class="sub" id="srcSub"></div>
       <button class="src-act secondary" id="btnCopySrc" title="复制源码">⧉ 源码</button>
       <button class="src-act secondary" id="btnCopyPath" title="复制文件路径">⧉ 路径</button>
+      <button class="src-act secondary" id="btnImplementations" title="查找接口/抽象方法的实现">⇉ 实现</button>
       <button id="srcToggle" title="折叠源码面板">»</button>
     </div>
     <pre id="srcBody"></pre>
