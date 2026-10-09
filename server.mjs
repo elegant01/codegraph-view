@@ -101,10 +101,6 @@ try {
   });
 } catch { /* 平台不支持 recursive watch 时静默降级（仅无过期提示） */ }
 
-// ===== 全链路任务注册表：支持取消与进度查询 =====
-const traceTasks = new Map(); // id -> { nodes, edges, done, error, cancelled }
-function expireTraceTask(id) { setTimeout(() => traceTasks.delete(id), 30000); }
-
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname;
@@ -255,35 +251,6 @@ const server = createServer(async (req, res) => {
     if (path === '/api/status') {
       return json(req, res, 200, { stale: indexStale, staleFile, reindexing: reindexState.running, bundled: useBundled, exposed: EXPOSED });
     }
-    // 全链路递归展开（轮询模式，兼容旧客户端）：direction=down（默认）| up（向上 callers 链）
-    if (path === '/api/trace') {
-      const sym = safeArg(url.searchParams.get('symbol'));
-      if (!sym) return json(req, res, 400, { error: 'missing ?symbol=' });
-      const file = safeFile((url.searchParams.get('file') || '').trim());
-      const depth = clampInt(url.searchParams.get('depth'), 6, 1, 10);
-      const maxNodes = clampInt(url.searchParams.get('maxNodes'), 300, 10, 800);
-      const direction = url.searchParams.get('direction') === 'up' ? 'up' : 'down';
-      const id = safeArg(url.searchParams.get('id'));
-      if (id) traceTasks.set(id, { nodes: 0, edges: 0, done: false, error: null, cancelled: false });
-      try {
-        const result = await traceChain({ run, root: ROOT, resolveSourceCalls: symbolResolver.resolveSourceCalls }, sym, file, {
-          depth, maxNodes, direction,
-          isCancelled: () => !!(id && traceTasks.get(id) && traceTasks.get(id).cancelled),
-          onProgress: (p) => { if (id && traceTasks.has(id)) traceTasks.set(id, { ...traceTasks.get(id), ...p, done: false, error: null }); },
-        });
-        if (id) {
-          traceTasks.set(id, { nodes: result.nodeCount, edges: result.edges.length, done: true, error: null, cancelled: result.cancelled });
-          expireTraceTask(id);
-        }
-        return json(req, res, 200, result);
-      } catch (e) {
-        if (id) {
-          traceTasks.set(id, { nodes: 0, edges: 0, done: true, error: String((e && e.message) || e), cancelled: false });
-          expireTraceTask(id);
-        }
-        throw e;
-      }
-    }
     // 全链路展开（SSE 流式）：进度事件实时推送，客户端断开即取消后端展开
     if (path === '/api/trace/stream') {
       const sym = safeArg(url.searchParams.get('symbol'));
@@ -314,18 +281,6 @@ const server = createServer(async (req, res) => {
       }
       if (!closed) res.end();
       return;
-    }
-    // 全链路进度轮询（兼容旧客户端）
-    if (path === '/api/trace/progress') {
-      const id = safeArg(url.searchParams.get('id'));
-      return json(req, res, 200, (id && traceTasks.get(id)) || { nodes: 0, edges: 0, done: false });
-    }
-    // 取消进行中的全链路展开
-    if (path === '/api/trace/cancel') {
-      const id = safeArg(url.searchParams.get('id'));
-      const t = id && traceTasks.get(id);
-      if (t && !t.done) { t.cancelled = true; return json(req, res, 200, { ok: true }); }
-      return json(req, res, 200, { ok: false });
     }
     // 文件内的符号列表
     if (path === '/api/symbols') {
