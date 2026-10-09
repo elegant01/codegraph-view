@@ -53,8 +53,8 @@
 
 ## 八、测试与 CI
 
-- [ ] **T1 服务端集成测试**：`node:test` 起 server 实测 `/api/search`、`/api/graph`、静态文件 403 路径绕过（钉死 safeFile/relative 防护逻辑）。
-- [ ] **T2 GitHub Actions**：3 行 workflow 跑 `node --test` + e2e。
+- [x] **T1 服务端集成测试**：`node:test` 起 server 实测 `/api/search`、`/api/graph`、静态文件 403 路径绕过（钉死 safeFile/relative 防护逻辑）。
+- [x] **T2 GitHub Actions**：3 行 workflow 跑 `node --test` + e2e。
 - [ ] **T3 TEST_CASES.md 处理**：与实际测试对齐或标注「由 test/unit.test.mjs 驱动」，避免漂移。
 
 ---
