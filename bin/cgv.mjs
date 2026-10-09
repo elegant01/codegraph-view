@@ -18,7 +18,7 @@ if (args[0] === 'view') {
 } else if (args.length === 0 || args[0] === '-h' || args[0] === '--help') {
   console.log(`用法: cgv <命令> [参数]
 
-  cgv view [端口]        启动调用关系可视化（默认 39267，浏览器打开 http://localhost:端口）
+  cgv view [端口] [--json]  启动调用关系可视化（默认 39267）；--json 输出结构化启动信息供脚本解析
   cgv <其他命令>          等同于 codegraph <命令>（init / query / callers / callees / node ...）
 
 查看 codegraph 全部命令: cgv codegraph --help 或 codegraph --help`);
