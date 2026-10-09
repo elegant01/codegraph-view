@@ -1,5 +1,9 @@
 # codegraph-view 端到端测试用例
 
+> ⚠️ 本文档是**手工端到端测试用例记录**（2026-08 对四种真实项目的一次完整回归），不是自动化测试。
+> 自动化测试见 `test/unit.test.mjs`（解析层单测）与 `test/server.test.mjs`（服务端集成测试），由 `npm test` 驱动。
+> 本文档仅在 codegraph CLI 输出格式或定位策略变更时人工重跑更新。
+>
 > 测试目标：验证「codegraph CLI 原生链路」与「工具 API / 图上链路 / 点击 / 悬浮」在三种语言项目下的一致性与正确性。
 >
 > 测试方式：对每个项目用 codegraph CLI 直接查询作为基准，再通过工具 API（`/api/search`、`/api/graph`、`/api/trace`、`/api/route`）和浏览器交互（点击、悬浮 title）验证。
