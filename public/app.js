@@ -30,11 +30,14 @@ let renderAllNodes = false; // 大图精简渲染：默认只渲染靠近中心�
 // 注意：不写死具体项目路径（如 src/lib/db），避免在其他语言项目误伤业务代码。
 const NOISE_RE = /(\.min\.(?:js|ts)$|\/node_modules\/|\/vendor\/|\/(?:dist|build|out|target|\.next|\.nuxt)\/|^external\/|\/external\/|\/third_party\/)/;
 function isNoise(node) { return node && node.file && NOISE_RE.test(node.file); }
-// 某节点是否应显示（中心始终显示；开关关闭时过滤噪音）
+// 某节点是否应显示（中心始终显示；开关关闭时过滤噪音；子图过滤按类型）
+let graphKindFilter = ''; // 当前子图类型过滤（''=全部），来自 #graphKindFilter
 function shouldShow(key) {
-  if (showNoise || key === graph.centerKey) return true;
+  if (key === graph.centerKey) return true;
   const n = graph.nodes.get(key);
-  return n ? !isNoise(n) : false;
+  if (!n) return false;
+  if (graphKindFilter && (n.kind || '') !== graphKindFilter) return false;
+  return showNoise || !isNoise(n);
 }
 
 function nodeKey(name, file) { return (file ? file + '::' : '') + name; }
@@ -1154,7 +1157,11 @@ try {
   if (savedW) $('#src').style.width = savedW;
 } catch (e) { /* 隐私模式忽略 */ }
 $('#btnUndo').onclick = undoExpand;
-// 噪音节点开关：关闭=过滤不显示，打开=全部显示（选择持久化到 localStorage）
+// 子图过滤：按符号类型只显示匹配节点（中心节点始终显示），切换后立即重绘
+$('#graphKindFilter').addEventListener('change', () => {
+  graphKindFilter = $('#graphKindFilter').value;
+  relayout();
+});
 $('#chkNoise').checked = showNoise;
 $('#chkNoise').addEventListener('change', () => {
   showNoise = $('#chkNoise').checked;
