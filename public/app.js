@@ -1120,6 +1120,73 @@ $('#q').addEventListener('keydown', e => {
   }
   else if (e.key === 'Escape') { e.target.value = ''; e.target.blur(); }
 });
+// ===== 命令面板：Ctrl+K / ⌘K 快速执行常用操作 =====
+const commandModal = $('#commandModal');
+const commandInput = $('#commandInput');
+const commandList = $('#commandList');
+let commandIndex = 0;
+const commands = [
+  { id: 'search', label: '聚焦搜索框', key: '/', run: () => { $('#q').focus(); $('#q').select(); } },
+  { id: 'files', label: '打开文件浏览', run: () => loadFiles() },
+  { id: 'upstream', label: '展开上游链路', run: () => $('#btnTraceUp').click() },
+  { id: 'path', label: '启动路径查找', run: () => $('#btnPath').click() },
+  { id: 'stack', label: '粘贴堆栈定位', run: () => $('#btnStack').click() },
+  { id: 'share', label: '复制分享链接', run: () => $('#btnShareLink').click() },
+  { id: 'theme', label: '切换主题', run: () => $('#btnTheme').click() },
+  { id: 'noise', label: '切换噪音节点', run: () => { $('#chkNoise').click(); } },
+  { id: 'reset', label: '重置画布与历史', run: () => $('#btnReset').click() },
+  { id: 'reindex', label: '重新建立索引', run: () => $('#btnReindex').click() },
+  { id: 'help', label: '打开使用说明', run: () => $('#btnHelp').click() },
+];
+function visibleCommands() {
+  const q = commandInput.value.trim().toLowerCase();
+  return q ? commands.filter(c => c.label.toLowerCase().includes(q) || c.id.includes(q)) : commands;
+}
+function renderCommands() {
+  const list = visibleCommands();
+  commandIndex = Math.max(0, Math.min(commandIndex, list.length - 1));
+  commandList.innerHTML = list.length
+    ? list.map((c, i) => `<div class="command-item${i === commandIndex ? ' active' : ''}" data-id="${c.id}"><span>${esc(c.label)}</span>${c.key ? `<kbd>${esc(c.key)}</kbd>` : ''}</div>`).join('')
+    : '<div class="command-item" style="cursor:default;color:var(--text-3)">没有匹配的命令</div>';
+  commandList.querySelectorAll('.command-item[data-id]').forEach(el => {
+    el.onclick = () => executeCommand(el.dataset.id);
+  });
+  const active = commandList.querySelector('.command-item.active');
+  if (active) active.scrollIntoView({ block: 'nearest' });
+}
+function closeCommands() {
+  commandModal.classList.remove('show');
+  commandInput.value = '';
+  commandIndex = 0;
+}
+function executeCommand(id) {
+  const command = commands.find(c => c.id === id);
+  if (!command) return;
+  closeCommands();
+  command.run();
+}
+function openCommands() {
+  commandModal.classList.add('show');
+  commandInput.value = '';
+  commandIndex = 0;
+  renderCommands();
+  commandInput.focus();
+}
+$('#btnCommand').onclick = openCommands;
+commandModal.addEventListener('click', (e) => { if (e.target === commandModal) closeCommands(); });
+commandInput.addEventListener('input', () => { commandIndex = 0; renderCommands(); });
+commandInput.addEventListener('keydown', (e) => {
+  const list = visibleCommands();
+  if (e.key === 'ArrowDown') { e.preventDefault(); if (list.length) { commandIndex = (commandIndex + 1) % list.length; renderCommands(); } }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); if (list.length) { commandIndex = (commandIndex - 1 + list.length) % list.length; renderCommands(); } }
+  else if (e.key === 'Enter') { e.preventDefault(); if (list[commandIndex]) executeCommand(list[commandIndex].id); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeCommands(); }
+});
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openCommands(); }
+  else if (e.key === 'Escape' && commandModal.classList.contains('show')) closeCommands();
+});
+
 // ===== 堆栈定位：解析 file:line[:column]，按源码符号范围定位并打开调用图 =====
 const stackModal = $('#stackModal');
 const closeStack = () => stackModal.classList.remove('show');

@@ -375,6 +375,15 @@
   .modal-foot button { padding: 5px 14px; }
   .modal-foot button.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
   .modal-foot button.primary:hover { color: var(--accent); filter: brightness(1.1); transform: none; box-shadow: none; }
+  .command-modal { width: min(560px, 94vw); max-height: 70vh; }
+  .command-search { display: flex; align-items: center; gap: 9px; padding: 13px 16px; border-bottom: 1px solid var(--border); }
+  .command-search > span { color: var(--accent); font-size: 18px; }
+  #commandInput { flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 15px; }
+  .command-list { overflow: auto; padding: 6px; }
+  .command-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; border-radius: 7px; cursor: pointer; color: var(--text); }
+  .command-item:hover, .command-item.active { background: var(--accent-dim); color: var(--accent); }
+  .command-item kbd { color: var(--text-3); font: 11px Consolas, monospace; }
+  .command-hint { padding: 7px 16px; border-top: 1px solid var(--border); color: var(--text-3); font-size: 11px; }
   .stack-modal { width: min(680px, 94vw); }
   #stackInput { width: 100%; box-sizing: border-box; resize: vertical; min-height: 150px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); color: var(--text); font: 12px/1.55 Consolas, monospace; }
   #stackInput:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
