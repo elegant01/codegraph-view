@@ -130,8 +130,27 @@
   <span>操作：<b>滚轮</b> 缩放 · <b>拖拽空白处</b> 平移 · <b>点击节点</b> 展开它的调用关系 · <b>双击节点</b> 以它为新中心重开 · <b>点击中心</b> 定位源码 · 快捷键：<b>/</b> 聚焦搜索 · <b>u</b> 撤销展开 · <b>r</b> 重置 · <b>+</b> / <b>−</b> 缩放</span>
   <button id="btnShareLink" class="secondary" title="复制当前图状态的分享链接（含中心符号/链路方向，打开即恢复）">🔗 分享链接</button>
   <button id="btnStack" class="secondary" title="粘贴错误堆栈并定位到源码符号">⎘ 堆栈</button>
+  <button id="btnProjects" class="secondary" title="切换最近项目">▣ 项目</button>
   <button id="btnHelp" class="secondary" title="打开使用说明">❓ 使用说明</button>
 </footer>
+<!-- 项目切换器 -->
+<div id="projectModal" class="modal-mask">
+  <div class="modal project-modal">
+    <div class="modal-head">
+      <h3>▣ 项目切换器</h3>
+      <button id="projectClose" class="secondary" title="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p>管理最近使用的 cgv view 实例；切换会在新地址打开当前图状态。</p>
+      <div class="project-form">
+        <input id="projectName" placeholder="项目名称，如 API 服务" autocomplete="off">
+        <input id="projectUrl" placeholder="地址，如 http://localhost:39267" autocomplete="url">
+        <button id="projectAdd" class="primary">添加项目</button>
+      </div>
+      <div id="projectList" class="project-list"></div>
+    </div>
+  </div>
+</div>
 <!-- 命令面板 -->
 <div id="commandModal" class="modal-mask">
   <div class="modal command-modal">

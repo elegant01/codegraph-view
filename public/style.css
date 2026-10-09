@@ -379,6 +379,19 @@
   .modal-foot button { padding: 5px 14px; }
   .modal-foot button.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
   .modal-foot button.primary:hover { color: var(--accent); filter: brightness(1.1); transform: none; box-shadow: none; }
+  .project-modal { width: min(680px, 94vw); }
+  .project-form { display: grid; grid-template-columns: 1fr 1.5fr auto; gap: 7px; margin: 10px 0 14px; }
+  .project-form input { min-width: 0; padding: 8px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); color: var(--text); outline: none; }
+  .project-form input:focus { border-color: var(--accent); }
+  .project-form .primary { white-space: nowrap; }
+  .project-list { display: flex; flex-direction: column; gap: 5px; }
+  .project-item { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; }
+  .project-item.current { border-color: var(--accent); background: var(--accent-dim); }
+  .project-item .project-info { flex: 1; min-width: 0; }
+  .project-item .project-name { color: var(--text); font-weight: 600; }
+  .project-item .project-url { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); font: 11px Consolas, monospace; }
+  .project-item .project-actions { display: flex; gap: 5px; }
+  .project-empty { padding: 12px; color: var(--text-3); text-align: center; }
   .command-modal { width: min(560px, 94vw); max-height: 70vh; }
   .command-search { display: flex; align-items: center; gap: 9px; padding: 13px 16px; border-bottom: 1px solid var(--border); }
   .command-search > span { color: var(--accent); font-size: 18px; }

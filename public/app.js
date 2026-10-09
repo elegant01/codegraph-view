@@ -1180,6 +1180,66 @@ $('#q').addEventListener('keydown', e => {
   }
   else if (e.key === 'Escape') { e.target.value = ''; e.target.blur(); }
 });
+// ===== 项目切换器：localStorage 保存最近 cgv view 实例 =====
+const projectModal = $('#projectModal');
+const PROJECTS_KEY = 'cgv-projects';
+function loadProjects() {
+  try {
+    const list = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
+    return Array.isArray(list) ? list.filter(p => p && p.url) : [];
+  } catch { return []; }
+}
+function saveProjects(list) {
+  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(list.slice(0, 12))); } catch { /* 隐私模式忽略 */ }
+}
+function normalizedProjectUrl(value) {
+  try {
+    const u = new URL(value, location.href);
+    if (!/^https?:$/.test(u.protocol)) return null;
+    return u.href.replace(/\/$/, '');
+  } catch { return null; }
+}
+function renderProjects() {
+  const list = loadProjects();
+  const current = location.origin;
+  $('#projectList').innerHTML = list.length ? list.map((p, i) => {
+    const active = normalizedProjectUrl(p.url) === current;
+    return `<div class="project-item${active ? ' current' : ''}">
+      <div class="project-info"><div class="project-name">${esc(p.name || p.url)}${active ? ' · 当前' : ''}</div><div class="project-url" title="${escAttr(p.url)}">${esc(p.url)}</div></div>
+      <div class="project-actions"><button class="secondary project-open" data-i="${i}">打开</button><button class="secondary project-delete" data-i="${i}" title="删除">✕</button></div>
+    </div>`;
+  }).join('') : '<div class="project-empty">暂无保存的项目，请添加 cgv view 地址。</div>';
+  $('#projectList').querySelectorAll('.project-open').forEach(el => el.onclick = () => {
+    const p = loadProjects()[Number(el.dataset.i)];
+    if (!p) return;
+    const target = normalizedProjectUrl(p.url);
+    if (!target) return notice('项目地址无效');
+    location.href = target + (location.hash || '');
+  });
+  $('#projectList').querySelectorAll('.project-delete').forEach(el => el.onclick = () => {
+    const list = loadProjects();
+    list.splice(Number(el.dataset.i), 1);
+    saveProjects(list);
+    renderProjects();
+  });
+}
+function openProjects() { projectModal.classList.add('show'); renderProjects(); }
+function closeProjects() { projectModal.classList.remove('show'); }
+$('#btnProjects').onclick = openProjects;
+$('#projectClose').onclick = closeProjects;
+projectModal.addEventListener('click', (e) => { if (e.target === projectModal) closeProjects(); });
+$('#projectAdd').onclick = () => {
+  const name = $('#projectName').value.trim();
+  const url = normalizedProjectUrl($('#projectUrl').value.trim());
+  if (!url) { notice('请输入有效的 http(s) 项目地址'); return; }
+  const list = loadProjects().filter(p => normalizedProjectUrl(p.url) !== url);
+  list.unshift({ name: name || url, url });
+  saveProjects(list);
+  $('#projectName').value = '';
+  $('#projectUrl').value = '';
+  renderProjects();
+};
+
 // ===== 命令面板：Ctrl+K / ⌘K 快速执行常用操作 =====
 const commandModal = $('#commandModal');
 const commandInput = $('#commandInput');
