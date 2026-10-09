@@ -236,9 +236,7 @@ cd /path/to/ban-server && cgv view 4000   # Go
 API：
 - `GET /api/search?q=&kind=&regex=` → 符号搜索（类型过滤 / 正则）
 - `GET /api/graph?symbol=&file=` → 某符号的 callers + callees + 源码
-- `GET /api/trace?symbol=&file=&depth=&maxNodes=&direction=` → 递归展开调用链（direction=down 向下 / up 向上 callers）
-- `GET /api/trace/stream?...` → 同上，SSE 流式：progress 事件实时进度，客户端断开即自动取消
-- `GET /api/trace/cancel?id=` → 取消进行中的展开
+- `GET /api/trace/stream?symbol=&file=&depth=&maxNodes=&direction=` → 递归展开调用链的 SSE 流式接口；发送 `progress` 事件报告进度，发送 `result` 事件返回 `{ nodes, edges, direction }`，客户端断开即自动取消
 - `GET /api/status` → 索引过期提示 / 运行信息
 - `GET /api/symbols?file=` → 某文件内的符号列表
 - `GET /api/files` → 全部文件（含符号数）
