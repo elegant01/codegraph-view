@@ -40,7 +40,7 @@
 
 ## 六、前端工程质量
 
-- [ ] **Q1 index.html 拆分**：拆成 `style.css` + `app.js`（原生 `<link>` / `<script type="module">`，保持零构建）。
+- [x] **Q1 index.html 拆分**：拆成 `style.css` + `app.js`（原生 `<link>` / `<script type="module">`，保持零构建）。
 - [ ] **Q2 图邻接表优化**：`callersOf/calleesOf` 由 O(n) 全边扫描改为 `Map<key, {in, out}>` 邻接表。
 - [ ] **Q3 localStorage 持久化**：搜索历史、主题、面板宽度、showNoise / renderAllNodes 开关状态。
 - [ ] **Q4 键盘可达性**：搜索框 ↑/↓ 选结果、Enter 打开、Esc 关面板。
