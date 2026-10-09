@@ -270,6 +270,8 @@
   .node:hover { transform: translate(var(--tx, 0px), calc(var(--ty, 0px) - 2px)); filter: brightness(1.15); }
   .node:hover rect { filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.5)); }
   .node text { font-size: 11px; font-family: Consolas, monospace; pointer-events: none; }
+  .node .repo-label { font-size: 9px; fill: var(--text-3); pointer-events: all; cursor: pointer; }
+  .node .repo-label:hover { fill: var(--accent); text-decoration: underline; }
   .node .plus { font-size: 12px; font-weight: 700; pointer-events: none; }
   .node.center rect { fill: var(--center-dim); stroke: var(--center); stroke-width: 2.5; filter: drop-shadow(0 0 20px rgba(251, 191, 36, 0.25)); }
   .node.center:hover rect { filter: drop-shadow(0 0 32px rgba(251, 191, 36, 0.4)); }
