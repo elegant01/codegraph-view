@@ -36,6 +36,13 @@
     <option value="variable">变量</option>
   </select>
   <label id="regexToggle" title="勾选后搜索词按正则表达式匹配（如 get.*List）"><input type="checkbox" id="chkRegex"> 正则</label>
+  <select id="graphKindFilter" title="子图过滤：只显示指定类型的节点（全部=不过滤）">
+    <option value="">节点:全部</option>
+    <option value="method">节点:方法</option>
+    <option value="function">节点:函数</option>
+    <option value="class">节点:类</option>
+    <option value="route">节点:路由</option>
+  </select>
   <button id="btnLeftToggle" class="secondary" title="折叠/展开左侧面板">‹</button>
   <button id="btnReset" class="secondary" title="清空历史与画布">重置</button>
   <button id="btnUndo" class="secondary" title="撤销最近一次点击展开，回到展开前状态">↩ 撤销展开</button>
