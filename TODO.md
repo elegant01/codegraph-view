@@ -5,7 +5,7 @@
 
 ## 一、功能增强（图谱交互）
 
-- [ ] **F1 节点悬停代码预览**：hover 节点弹出代码片段 Tooltip。server.mjs 加 `/api/source?file=X&line=N`（safeFile 防逃逸，2MB 上限）；前端 `#nodeTip` 用 `getBoundingClientRect()` 定位（兼容 viewport translate/scale），防抖 180ms + Map 缓存；语法高亮逐段 token 提取后分别 esc 防 XSS。参考实现：`public/index.html.opt-20260825`。
+- [x] **F1 节点悬停代码预览**：hover 节点弹出代码片段 Tooltip。server.mjs 加 `/api/source?file=X&line=N`（safeFile 防逃逸，2MB 上限）；前端 `#nodeTip` 用 `getBoundingClientRect()` 定位（兼容 viewport translate/scale），防抖 180ms + Map 缓存；语法高亮逐段 token 提取后分别 esc 防 XSS。参考实现：`public/index.html.opt-20260825`。
 - [ ] **F2 两点路径查找**：选中 A、B 两个节点，BFS 求 A→B 调用路径并高亮，纯前端（数据已在图模型中）。
 - [ ] **F3 节点右键菜单**：以此为中心 / 展开上层 / 展开下层 / 复制文件路径 / 在编辑器打开（`vscode://file/...` 协议）。
 - [ ] **F4 图快照/书签**：当前图状态（中心节点 + 展开层级）存 URL hash 或 localStorage，可分享、可回看。
