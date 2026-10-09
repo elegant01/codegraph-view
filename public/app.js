@@ -16,7 +16,19 @@ const graph = { nodes: new Map(), edges: new Set(), centerKey: null };
 const history = [];
 const expandStack = []; // 展开撤销栈：每次点击节点展开前保存图快照
 let allFiles = [];
+let repoList = [];
 let viewTransform = { x: 0, y: 0, k: 1 };
+async function loadRepos() {
+  try { repoList = await api('/repos'); } catch { repoList = []; }
+}
+function repoForFile(file) {
+  const path = String(file || '').replace(/\\/g, '/').replace(/^\.?\//, '');
+  const repo = repoList.find(r => !r.path || path === r.path || path.startsWith(r.path + '/'));
+  return repo ? repo.name : '';
+}
+function annotateRepos() {
+  for (const node of graph.nodes.values()) node.repo = repoForFile(node.file);
+}
 let expanding = false;
 let showNoise = false; // 噪音节点开关：默认关闭=过滤不显示，打开=全部显示
 try { showNoise = localStorage.getItem('cgv-noise') === '1'; } catch (e) { /* 隐私模式忽略 */ }
@@ -43,7 +55,7 @@ function shouldShow(key) {
 function nodeKey(name, file) { return (file ? file + '::' : '') + name; }
 function addNode(name, file, kind, line) {
   const key = nodeKey(name, file);
-  if (!graph.nodes.has(key)) graph.nodes.set(key, { key, name, label: name, query: name, file, kind, line: line || null, expanded: false });
+  if (!graph.nodes.has(key)) graph.nodes.set(key, { key, name, label: name, query: name, file, kind, line: line || null, repo: repoForFile(file), expanded: false });
   return graph.nodes.get(key);
 }
 // 邻接表：addEdge 时同步维护，callersOf/calleesOf 由 O(n) 全边扫描降为 O(1) 取表
@@ -830,6 +842,26 @@ function mkNode(node, p) {
   const t = g('text', { x: 0, y: 4, 'text-anchor': 'middle' });
   t.textContent = label.length > 24 ? label.slice(0, 23) + '…' : label;
   grp.appendChild(t);
+  if (node.repo && repoList.length > 1) {
+    const repoText = g('text', { x: 0, y: h / 2 + 12, 'text-anchor': 'middle', 'class': 'repo-label' });
+    repoText.textContent = `⌂ ${node.repo}`;
+    repoText.setAttribute('data-repo', node.repo);
+    repoText.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const prefix = repoList.find(r => r.name === node.repo)?.path || '';
+      const target = [...graph.nodes.values()].find(n => n.repo === node.repo && n.key !== node.key);
+      if (target) {
+        history.push({ symbol: target.name, file: target.file, key: target.key });
+        expandStack.length = 0;
+        graph.centerKey = target.key;
+        target.expanded = true;
+        updateCrumbs();
+        relayout();
+        notice(`已切换到子仓库「${node.repo}」${prefix ? `（${prefix}）` : ''}`);
+      } else notice(`当前图中没有更多「${node.repo}」节点`);
+    });
+    grp.appendChild(repoText);
+  }
   if (!node.expanded && node.key !== graph.centerKey) {
     const plus = g('text', { x: w / 2 - 12, y: -8, 'class': 'plus', 'text-anchor': 'middle' });
     plus.textContent = '+';
@@ -1658,5 +1690,6 @@ $('#btnTheme').onclick = () => {
 $('#btnTheme').textContent = document.documentElement.getAttribute('data-theme') === 'light' ? '🌙' : '☀️';
 
 renderRecent();
+loadRepos();
 loadFiles();
 restoreFromHash();

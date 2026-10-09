@@ -2,7 +2,7 @@
 // 用法: node server.mjs [端口] [--host 0.0.0.0]  →  打开 http://localhost:39267
 // 默认仅监听 127.0.0.1（本机工具，防局域网访问源码）；需要共享时显式 --host 或 HOST 环境变量
 import { createServer } from 'node:http';
-import { readFile, stat as fsStat } from 'node:fs/promises';
+import { readFile, stat as fsStat, readdir } from 'node:fs/promises';
 import { watch } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +16,34 @@ import { createSymbolResolver } from './lib/sourcecalls.mjs';
 import { traceChain } from './lib/trace.mjs';
 
 const ROOT = process.cwd(); // 项目根目录（codegraph 索引所在）
+const ROOT_NAME = ROOT.split(/[\\/]/).filter(Boolean).pop() || 'root';
 const PKG = fileURLToPath(new URL('.', import.meta.url));
+
+// 发现聚合根目录下的嵌套 Git 仓库；只返回相对路径，供前端给节点打仓库标签
+let repoCache = null;
+async function discoverRepos() {
+  if (repoCache) return repoCache;
+  const found = [{ name: ROOT_NAME, path: '' }];
+  const ignored = new Set(['.git', '.codegraph', 'node_modules', 'vendor', 'dist', 'build', 'out', '.next', '.nuxt', '.idea', '.vscode', 'coverage']);
+  async function walk(dir, rel, depth) {
+    if (depth > 8) return;
+    let entries;
+    try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || ignored.has(entry.name)) continue;
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      const child = join(dir, entry.name);
+      try {
+        const childEntries = await readdir(child, { withFileTypes: true });
+        if (childEntries.some(e => e.name === '.git')) found.push({ name: entry.name, path: childRel });
+        if (!childEntries.some(e => e.name === '.git')) await walk(child, childRel, depth + 1);
+      } catch { /* 无权限或已删除目录，跳过 */ }
+    }
+  }
+  await walk(ROOT, '', 0);
+  repoCache = found.sort((a, b) => b.path.length - a.path.length);
+  return repoCache;
+}
 const PUB = join(PKG, 'public');
 
 // 端口/主机解析：--host 显式指定，否则默认仅本机回环
@@ -111,6 +138,10 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname;
   try {
+    // 聚合仓库列表：根仓库 + 嵌套独立 Git 仓库
+    if (path === '/api/repos') {
+      return json(req, res, 200, await discoverRepos());
+    }
     // 轻量探活：不触发任何 codegraph 调用，供 pm2/systemd/容器健康检查使用
     if (path === '/_health') {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
