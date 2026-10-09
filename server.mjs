@@ -109,6 +109,11 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname;
   try {
+    // 轻量探活：不触发任何 codegraph 调用，供 pm2/systemd/容器健康检查使用
+    if (path === '/_health') {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end('{"ok":true}');
+    }
     // 搜索符号（支持 kind 过滤 / 正则模式）
     if (path === '/api/search') {
       const q = safeArg(url.searchParams.get('q'));
@@ -374,7 +379,14 @@ const server = createServer(async (req, res) => {
     if (rel.startsWith('..') || isAbsolute(rel)) return json(req, res, 403, { error: 'forbidden' });
     try {
       const body = await readFile(full);
-      res.writeHead(200, { 'Content-Type': MIME[extname(full)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' });
+      // ETag：基于内容大小 + mtime，命中 If-None-Match 返回 304 省流量
+      const stat = await fsStat(full);
+      const etag = `W/"${stat.size}-${stat.mtimeMs.toString(36)}"`;
+      if (req.headers['if-none-match'] === etag) {
+        res.writeHead(304, { ETag: etag });
+        return res.end();
+      }
+      res.writeHead(200, { 'Content-Type': MIME[extname(full)] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', ETag: etag, 'Cache-Control': 'no-cache' });
       return res.end(body);
     } catch {
       return json(req, res, 404, { error: 'not found' });
