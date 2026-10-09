@@ -2,7 +2,7 @@
 // 用法: node server.mjs [端口] [--host 0.0.0.0]  →  打开 http://localhost:39267
 // 默认仅监听 127.0.0.1（本机工具，防局域网访问源码）；需要共享时显式 --host 或 HOST 环境变量
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat as fsStat } from 'node:fs/promises';
 import { watch } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -335,6 +335,28 @@ const server = createServer(async (req, res) => {
       const more = out.match(/^- … \+(\d+) more$/m);
       const total = more ? symbols.length + Number(more[1]) : symbols.length;
       return json(req, res, 200, { file, symbols, total, truncated: !!more });
+    }
+    // 源码片段（节点悬停预览）：file + line，返回该行 ±8 行
+    if (path === '/api/source') {
+      const file = safeFile((url.searchParams.get('file') || '').trim());
+      if (!file) return json(req, res, 400, { error: 'missing or invalid ?file=' });
+      const line = clampInt(url.searchParams.get('line'), 1, 1, 1e9);
+      // 相对 ROOT 解析（与 codegraph 索引一致），path.relative 防目录逃逸
+      const full = normalize(join(ROOT, file));
+      const rel = relative(ROOT, full);
+      if (rel.startsWith('..') || isAbsolute(rel)) return json(req, res, 403, { error: 'forbidden' });
+      try {
+        let stat;
+        try { stat = await fsStat(full); } catch { return json(req, res, 404, { error: 'file not found' }); }
+        if (stat.size > 2 * 1024 * 1024) return json(req, res, 413, { error: 'file too large' });
+        const text = await readFile(full, 'utf8');
+        const lines = text.split('\n');
+        const start = Math.max(1, line - 8);
+        const end = Math.min(lines.length, line + 8);
+        return json(req, res, 200, { file, line, start, end, total: lines.length, snippet: lines.slice(start - 1, end).join('\n') });
+      } catch (e) {
+        return json(req, res, 500, { error: '读取失败：' + ((e && e.message) || e) });
+      }
     }
     // 文件列表（30s 缓存）
     if (path === '/api/files') {

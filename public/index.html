@@ -325,6 +325,27 @@
   #notice.info { background: var(--accent-dim); border-color: var(--accent); color: #cfe5ff; }
   #moreBadge { position: absolute; right: 14px; bottom: 46px; background: var(--panel); border: 1px solid var(--border); color: var(--text-2); padding: 4px 10px; border-radius: 8px; font-size: 12px; display: none; cursor: pointer; z-index: 25; box-shadow: 0 0 8px rgba(0,0,0,.3); }
   #moreBadge:hover { border-color: var(--accent); color: var(--text-1); }
+  /* 节点悬停代码预览 Tooltip（HTML 浮层，替代原生 <title>） */
+  #nodeTip {
+    position: fixed; display: none; width: 340px; max-width: 90vw;
+    background: var(--panel); border: 1px solid var(--border-light); border-radius: 10px;
+    padding: 10px 12px; font-size: 12px; z-index: 60; box-shadow: var(--shadow); pointer-events: none;
+  }
+  #nodeTip .tip-kind { display: inline-block; font-size: 10px; padding: 1px 8px; border-radius: 999px; background: var(--accent-dim); color: var(--accent); margin-bottom: 5px; }
+  #nodeTip .tip-name { font-family: Consolas, monospace; font-weight: 600; word-break: break-all; color: var(--text); }
+  #nodeTip .tip-file { font-size: 11px; color: var(--text-2); font-family: Consolas, monospace; word-break: break-all; margin-top: 3px; }
+  #nodeTip .tip-code { margin: 8px 0 0; max-height: 220px; overflow: auto; font-size: 11px; line-height: 1.6; font-family: Consolas, monospace; color: #b9c6e2; white-space: pre; }
+  :root[data-theme="light"] #nodeTip .tip-code { color: #24292f; }
+  #nodeTip .tip-code div { display: flex; }
+  #nodeTip .tip-code .ln { flex: 0 0 34px; text-align: right; padding-right: 8px; color: var(--text-3); user-select: none; }
+  #nodeTip .tip-code div.cur { background: var(--accent-glow); border-radius: 4px; }
+  #nodeTip .tip-loading, #nodeTip .tip-empty { color: var(--text-3); }
+  #nodeTip .tk-kw { color: #ff7b72; }
+  #nodeTip .tk-str { color: #a5d6ff; }
+  :root[data-theme="light"] #nodeTip .tk-str { color: #0a3069; }
+  #nodeTip .tk-com { color: #8b949e; font-style: italic; }
+  #nodeTip .tk-num { color: #d2a8ff; }
+  :root[data-theme="light"] #nodeTip .tk-num { color: #8250df; }
 
   footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--text-3); padding: 8px 18px; background: var(--panel); border-top: 1px solid var(--border); }
   footer b { color: var(--text-2); }
@@ -502,6 +523,7 @@
     </div>
     <div id="notice"></div>
     <div id="moreBadge" title="节点过多，仅渲染靠近中心的部分，点击可展开查看其余节点"></div>
+    <div id="nodeTip"></div>
   </div>
   <div class="panel right" id="src">
     <div id="srcResizer" title="拖动调整源码面板宽度"></div>
@@ -602,9 +624,9 @@ function shouldShow(key) {
 }
 
 function nodeKey(name, file) { return (file ? file + '::' : '') + name; }
-function addNode(name, file, kind) {
+function addNode(name, file, kind, line) {
   const key = nodeKey(name, file);
-  if (!graph.nodes.has(key)) graph.nodes.set(key, { key, name, label: name, query: name, file, kind, expanded: false });
+  if (!graph.nodes.has(key)) graph.nodes.set(key, { key, name, label: name, query: name, file, kind, line: line || null, expanded: false });
   return graph.nodes.get(key);
 }
 function addEdge(aKey, bKey) { if (aKey !== bKey) graph.edges.add(aKey + SEP + bKey); }
@@ -993,8 +1015,8 @@ function isImportRef(name) { return /^(@\/|\.\/|\.\.\/|\/|node:)/.test(name); }
 const GRAPH_SKIP_KIND = new Set(['import', 'interface', 'type']);
 function isRefNoise(c) { return c && (GRAPH_SKIP_KIND.has(c.kind) || isImportRef(c.name)); }
 function integrate(data, key) {
-  for (const c of data.callers || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath, c.kind); addEdge(n.key, key); }
-  for (const c of data.callees || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath, c.kind); addEdge(key, n.key); }
+  for (const c of data.callers || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath, c.kind, c.startLine); addEdge(n.key, key); }
+  for (const c of data.callees || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath, c.kind, c.startLine); addEdge(key, n.key); }
 }
 
 // 全新开始：以 symbol 为中心。query 用于 API（可为限定名），name+file 用于节点键
@@ -1784,6 +1806,73 @@ function applyHighlight() {
     el.style.opacity = (!kw || label.includes(kw)) ? '1' : '0.2';
   });
 }
+// ===== 节点 Tooltip：悬停显示限定名、文件行号与高亮代码片段（/api/source，防抖 + 缓存） =====
+const nodeTip = $('#nodeTip');
+let tipTimer = null;
+let tipCache = new Map(); // file:line -> /api/source 结果，避免快速扫过时打爆接口
+function tipPosition(el) {
+  const r = el.getBoundingClientRect();
+  const tw = nodeTip.offsetWidth || 340, th = nodeTip.offsetHeight || 160;
+  let x = r.right + 10, y = r.top - 10;
+  if (x + tw > innerWidth - 8) x = r.left - tw - 10;
+  if (y + th > innerHeight - 8) y = innerHeight - th - 10;
+  nodeTip.style.left = Math.max(8, x) + 'px';
+  nodeTip.style.top = Math.max(8, y) + 'px';
+}
+function showTip(key, el) {
+  const node = graph.nodes.get(key);
+  if (!node) return;
+  clearTimeout(tipTimer);
+  if (nodeTip._key !== key) { // 同一节点内移动只刷新位置，不重建内容
+    nodeTip._key = key;
+    const kind = node.kind && KIND_LABEL[node.kind] ? `<span class="tip-kind">${esc(KIND_LABEL[node.kind])}</span>` : '';
+    const file = node.file ? `<div class="tip-file">📄 ${esc(node.file)}${node.line ? ' : ' + node.line : ''}</div>` : '';
+    nodeTip.innerHTML = `${kind}<div class="tip-name">${esc(node.label)}</div>${file}<pre class="tip-code"><span class="tip-loading">⏳ 加载代码片段…</span></pre>`;
+    nodeTip.style.display = 'block';
+    const cacheKey = (node.file || '') + ':' + (node.line || 0);
+    if (!node.file || !node.line) nodeTip.querySelector('.tip-code').innerHTML = '<span class="tip-empty">（无源码信息）</span>';
+    else if (tipCache.has(cacheKey)) renderTipCode(node, tipCache.get(cacheKey));
+    else tipTimer = setTimeout(async () => { // 防抖：短暂停留才拉取
+      try {
+        const data = await api('/source', { file: node.file, line: node.line });
+        tipCache.set(cacheKey, data);
+        if (hoverKey === key) { renderTipCode(node, data); tipPosition(el); }
+      } catch { if (hoverKey === key) nodeTip.querySelector('.tip-code').innerHTML = '<span class="tip-empty">（加载失败）</span>'; }
+    }, 180);
+  }
+  tipPosition(el);
+}
+function renderTipCode(node, data) {
+  const pre = nodeTip.querySelector('.tip-code');
+  if (!data || !data.snippet) { pre.innerHTML = '<span class="tip-empty">（无源码片段）</span>'; return; }
+  const start = data.start || 1;
+  pre.innerHTML = data.snippet.split('\n').map((ln, i) => {
+    const n = start + i;
+    const cls = n === node.line ? ' cur' : '';
+    return `<div class="${cls}"><span class="ln">${n}</span><span class="tx">${highlightLine(ln)}</span></div>`;
+  }).join('');
+}
+// 轻量语法高亮：逐段 token 提取后分别转义，防 XSS 且不破坏引号匹配
+function highlightLine(line) {
+  const re = /(\/\/.*$|#(?!\[).*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d+\b)|(\b(?:function|class|const|let|var|return|if|else|for|while|new|public|private|protected|static|namespace|use|extends|implements|interface|type|import|export|async|await|try|catch|throw|this|readonly|int|string|bool|array|void|null|true|false|echo|require|include|switch|case|break|continue|instanceof|fn|struct|enum|match|func|def|self)\b)/g;
+  let out = '', last = 0, m;
+  while ((m = re.exec(line)) !== null) {
+    out += esc(line.slice(last, m.index));
+    if (m[1]) out += `<span class="tk-com">${esc(m[1])}</span>`;
+    else if (m[2]) out += `<span class="tk-str">${esc(m[2])}</span>`;
+    else if (m[3]) out += `<span class="tk-num">${esc(m[3])}</span>`;
+    else out += `<span class="tk-kw">${esc(m[4])}</span>`;
+    last = m.index + m[0].length;
+  }
+  out += esc(line.slice(last));
+  return out;
+}
+function hideTip() {
+  clearTimeout(tipTimer);
+  nodeTip._key = null;
+  nodeTip.style.display = 'none';
+}
+
 // 事件委托（mouseover/mouseout 冒泡，relayout 重建 DOM 后无需重新绑定）
 // 优先 hover：鼠标在节点上时显示该节点全链路；移开后若有点击固定高亮则恢复之，否则清除。
 // 注意：click 不走委托——mkNode 的 onclick 里 e.stopPropagation() 会拦截冒泡，故在 onclick 内直接设 clickKey。
@@ -1791,6 +1880,7 @@ viewport.addEventListener('mouseover', (e) => {
   const n = e.target.closest && e.target.closest('.node');
   if (n && n.dataset.key) {
     if (hoverKey !== n.dataset.key) { hoverKey = n.dataset.key; applyChainHighlight(n.dataset.key); }
+    showTip(n.dataset.key, n);
   }
 });
 viewport.addEventListener('mouseout', (e) => {
@@ -1798,6 +1888,7 @@ viewport.addEventListener('mouseout', (e) => {
   const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.node') : null;
   if (from && from !== to) {
     hoverKey = null;
+    hideTip();
     if (clickKey) applyChainHighlight(clickKey); // 恢复点击固定的高亮
     else clearChainHighlight();
   }
