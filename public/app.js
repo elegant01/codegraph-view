@@ -386,6 +386,8 @@ function restoreFromHash() {
   else if (g) startGraph(g, shortName(g), f);
 }
 window.addEventListener('hashchange', () => { if (!hashGuard) restoreFromHash(); });
+// 一键复制分享链接：当前 hash 即图状态（中心符号/文件/链路方向），打开即恢复
+$('#btnShareLink').onclick = () => copyText(location.href, '已复制分享链接');
 
 // ===== 源码语法高亮：轻量 tokenizer，注释/字符串/数字/关键字/函数调用 =====
 const KW = new Set(('function class return if else elif elseif for while foreach do switch case default break continue new delete typeof instanceof ' +
@@ -635,6 +637,32 @@ async function expandNode(key) {
   finally { expanding = false; }
 }
 
+// 展开上层（调用它的）：与 expandNode 同流程，但只并入 callers，不展开 callees
+async function expandCallers(key) {
+  const node = graph.nodes.get(key);
+  if (!node || expanding) return;
+  expanding = true;
+  const snap = snapshotGraph();
+  loading('正在展开上层：' + node.name);
+  try {
+    const data = await api('/graph', node.file ? { symbol: node.query || node.name, file: node.file } : { symbol: node.query || node.name });
+    expandStack.push(snap);
+    if (expandStack.length > 20) expandStack.shift();
+    node.expanded = true;
+    // 只并入调用者侧，避免「展开上层」把它的被调用者也带进来
+    for (const c of data.callers || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath, c.kind, c.startLine); addEdge(n.key, key); }
+    relayout();
+    const added = graph.nodes.size - snap.nodes.size;
+    notice(added ? `已展开 ${added} 个调用者` : '没有更多调用者');
+    clearLoading();
+  } catch (e) {
+    restoreSnapshot(snap);
+    relayout();
+    notice('展开失败，已恢复：' + e.message);
+  }
+  finally { expanding = false; }
+}
+
 // ===== 布局：从中心 BFS 分层，左调用者右被调用者 =====
 function layoutGraph() {
   const layerOf = new Map([[graph.centerKey, 0]]);
@@ -852,6 +880,39 @@ $('#minimap').addEventListener('click', (e) => {
 // 视口变化时同步 minimap 视口框（包装 applyTransform，避免到处改调用点）
 const _applyTransform = applyTransform;
 applyTransform = function () { _applyTransform(); drawMinimap(); };
+
+// ===== 节点右键菜单：以此为中心 / 展开下层 / 展开上层 / 复制路径 / 在编辑器打开 =====
+const ctxMenu = $('#ctxMenu');
+function hideCtx() { ctxMenu.style.display = 'none'; }
+function showCtx(key, x, y) {
+  const node = graph.nodes.get(key);
+  if (!node) return;
+  const isCenter = key === graph.centerKey;
+  const items = [
+    { label: '🎯 以此为中心', act: () => { history.push({ symbol: node.name, file: node.file, key }); expandStack.length = 0; graph.centerKey = key; node.expanded = true; updateCrumbs(); relayout(); } },
+    !isCenter && !node.expanded && { label: '⤵ 展开下层（它调用的）', act: () => expandNode(key) },
+    !isCenter && { label: '⤴ 展开上层（调用它的）', act: () => expandCallers(key) },
+    { sep: true },
+    node.file && { label: '⧉ 复制文件路径', act: () => copyText(node.file, '已复制路径') },
+    node.file && { label: '↗ 在编辑器打开', act: () => { window.open(`vscode://file/${node.file.replace(/\\/g, '/')}:${node.line || 1}`); } },
+  ].filter(Boolean);
+  ctxMenu.innerHTML = items.map((it, i) => it.sep ? '<div class="ctx-sep"></div>' : `<div class="ctx-item" data-i="${i}">${it.label}</div>`).join('');
+  ctxMenu.querySelectorAll('.ctx-item').forEach(el => { el.onclick = () => { hideCtx(); items[Number(el.dataset.i)].act(); }; });
+  ctxMenu.style.display = 'block';
+  const tw = ctxMenu.offsetWidth, th = ctxMenu.offsetHeight;
+  ctxMenu.style.left = Math.min(x, innerWidth - tw - 8) + 'px';
+  ctxMenu.style.top = Math.min(y, innerHeight - th - 8) + 'px';
+}
+// 事件委托：relayout 重建 DOM 后无需重新绑定；任意点击/Esc 关闭
+viewport.addEventListener('contextmenu', (e) => {
+  const n = e.target.closest && e.target.closest('.node');
+  if (!n || !n.dataset.key) return hideCtx();
+  e.preventDefault();
+  showCtx(n.dataset.key, e.clientX, e.clientY);
+});
+window.addEventListener('click', hideCtx);
+window.addEventListener('blur', hideCtx);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtx(); });
 
 // ===== 路径查找：依次点两个节点，BFS 有向最短路径并高亮（Esc/再点按钮退出） =====
 const pathHL = { nodes: new Set(), edges: new Set() };
