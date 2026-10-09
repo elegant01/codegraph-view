@@ -772,6 +772,29 @@ function relayout() {
 
   // 边（两端都可见才画，避免指向未渲染节点）
   let edgeCount = 0;
+  const edgeCurve = (pa, pb, cycle, edgeIndex) => {
+    const dx = pb.x - pa.x, dy = pb.y - pa.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const startGap = Math.min(92, len * 0.22);
+    const endGap = Math.min(104, len * 0.25);
+    const sx = pa.x + (dx / len) * startGap;
+    const sy = pa.y + (dy / len) * Math.min(18, len * 0.08);
+    const ex = pb.x - (dx / len) * endGap;
+    const ey = pb.y - (dy / len) * Math.min(18, len * 0.08);
+    if (!cycle) {
+      const bend = Math.max(24, Math.min(90, Math.abs(dy) * .22 + 18));
+      const sign = dy === 0 ? (edgeIndex % 2 ? -1 : 1) : Math.sign(dy);
+      const c1x = sx + (ex - sx) * .38;
+      const c2x = sx + (ex - sx) * .62;
+      return `M ${sx} ${sy} C ${c1x} ${sy + bend * sign}, ${c2x} ${ey - bend * sign}, ${ex} ${ey}`;
+    }
+    // 回边从连线侧面绕开，避免与正常调用方向重叠。
+    const normalX = -dy / len, normalY = dx / len;
+    const bend = Math.max(48, Math.min(150, len * .28)) * (edgeIndex % 2 ? -1 : 1);
+    const mx = (sx + ex) / 2 + normalX * bend;
+    const my = (sy + ey) / 2 + normalY * bend;
+    return `M ${sx} ${sy} Q ${mx} ${my} ${ex} ${ey}`;
+  };
   for (const e of graph.edges) {
     const i = e.indexOf(SEP);
     const a = e.slice(0, i), b = e.slice(i + 1);
@@ -783,14 +806,16 @@ function relayout() {
     if (b === graph.centerKey) { cls += ' to-center'; marker = 'arrIn'; }
     else if (a === graph.centerKey) { cls += ' from-center'; marker = 'arrOut'; }
     // 回边（指向同层或上层的边）= 调用环/回调，橙色虚线提示
-    if (pb.layer <= pa.layer) cls += ' cycle';
+    const cycle = pb.layer <= pa.layer;
+    if (cycle) cls += ' cycle';
     if (pathHL.edges.has(a + SEP + b)) cls += ' on-path';
-    const dx = pb.x - pa.x, dy = pb.y - pa.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const off = 100; // 节点半宽余量
-    const x2 = pb.x - (dx / len) * Math.min(off, len * 0.4);
-    const y2 = pb.y - (dy / len) * Math.min(off * 0.2, len * 0.4);
-    viewport.appendChild(g('line', { x1: pa.x, y1: pa.y, x2, y2, 'class': cls, 'marker-end': `url(#${marker})`, 'data-a': a, 'data-b': b }));
+    viewport.appendChild(g('path', {
+      d: edgeCurve(pa, pb, cycle, edgeCount),
+      'class': cls,
+      'marker-end': `url(#${marker})`,
+      'data-a': a,
+      'data-b': b
+    }));
   }
 
   // 节点
@@ -832,16 +857,29 @@ function relayout() {
 
 function mkNode(node, p) {
   const label = node.label;
-  const w = Math.min(220, Math.max(96, label.length * 7 + 30));
+  const kindLabel = KIND_LABEL[node.kind] || (node.kind ? node.kind : (node.key === graph.centerKey ? '当前中心' : '符号'));
+  const filePath = node.file ? node.file.replace(/\\/g, '/') : '';
+  const fileName = filePath ? filePath.split('/').pop() : '';
+  const lineLabel = fileName ? `${fileName}${node.line ? ':' + node.line : ''}` : '';
+  const w = Math.min(248, Math.max(126, label.length * 7 + 48, lineLabel.length * 6 + 42));
   const indegree = callersOf(node.key).length;
   const hotspot = hotspotMode ? Math.min(1, indegree / 8) : 0;
-  const h = 38 + Math.round(hotspot * 14);
+  const h = 54 + Math.round(hotspot * 14);
   const cls = nodeClass(node, p.layer) + (node.expanded || node.key === graph.centerKey ? '' : ' leaf');
-  const grp = g('g', { 'class': 'node ' + cls, style: `--tx:${p.x}px; --ty:${p.y}px`, 'data-key': node.key });
-  grp.appendChild(g('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: hotspot ? 5 : 0 }));
-  const t = g('text', { x: 0, y: 4, 'text-anchor': 'middle' });
-  t.textContent = label.length > 24 ? label.slice(0, 23) + '…' : label;
+  const grp = g('g', { 'class': 'node ' + cls, style: `--tx:${p.x}px; --ty:${p.y}px`, 'data-key': node.key, 'data-kind': node.kind || '', 'aria-label': `${label} · ${kindLabel}${lineLabel ? ' · ' + lineLabel : ''}` });
+  grp.appendChild(g('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: hotspot ? 8 : 10 }));
+  const t = g('text', { x: 0, y: -8, 'text-anchor': 'middle', 'class': 'node-name' });
+  t.textContent = label.length > 28 ? label.slice(0, 27) + '…' : label;
   grp.appendChild(t);
+  const kindText = g('text', { x: 0, y: 9, 'text-anchor': 'middle', 'class': 'node-kind' });
+  kindText.textContent = kindLabel;
+  grp.appendChild(kindText);
+  if (lineLabel) {
+    const metaText = g('text', { x: 0, y: 23, 'text-anchor': 'middle', 'class': 'node-meta' });
+    metaText.textContent = lineLabel.length > 34 ? lineLabel.slice(0, 33) + '…' : lineLabel;
+    metaText.setAttribute('title', filePath + (node.line ? ':' + node.line : ''));
+    grp.appendChild(metaText);
+  }
   if (node.repo && repoList.length > 1) {
     const repoText = g('text', { x: 0, y: h / 2 + 12, 'text-anchor': 'middle', 'class': 'repo-label' });
     repoText.textContent = `⌂ ${node.repo}`;
