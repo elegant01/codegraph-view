@@ -126,8 +126,26 @@
 <footer>
   <span>操作：<b>滚轮</b> 缩放 · <b>拖拽空白处</b> 平移 · <b>点击节点</b> 展开它的调用关系 · <b>双击节点</b> 以它为新中心重开 · <b>点击中心</b> 定位源码 · 快捷键：<b>/</b> 聚焦搜索 · <b>u</b> 撤销展开 · <b>r</b> 重置 · <b>+</b> / <b>−</b> 缩放</span>
   <button id="btnShareLink" class="secondary" title="复制当前图状态的分享链接（含中心符号/链路方向，打开即恢复）">🔗 分享链接</button>
+  <button id="btnStack" class="secondary" title="粘贴错误堆栈并定位到源码符号">⎘ 堆栈</button>
   <button id="btnHelp" class="secondary" title="打开使用说明">❓ 使用说明</button>
 </footer>
+<!-- 堆栈定位弹窗 -->
+<div id="stackModal" class="modal-mask">
+  <div class="modal stack-modal">
+    <div class="modal-head">
+      <h3>⎘ 粘贴堆栈定位</h3>
+      <button id="stackClose" class="secondary" title="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p>粘贴运行时错误堆栈，自动识别项目文件与行号，并定位到对应符号。</p>
+      <textarea id="stackInput" rows="9" placeholder="例如：\n    at getRoomList (src/api/room.ts:42:8)\n    at processRequest (src/server.ts:18:3)"></textarea>
+      <div id="stackResults" class="stack-results"></div>
+    </div>
+    <div class="modal-foot">
+      <button id="stackLocate" class="primary">定位堆栈</button>
+    </div>
+  </div>
+</div>
 <!-- 使用说明弹窗 -->
 <div id="helpModal" class="modal-mask">
   <div class="modal">
