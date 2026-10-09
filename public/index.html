@@ -51,6 +51,7 @@
   <label id="noiseToggle" title="关闭时过滤压缩混淆文件、外部依赖、基础设施等噪音节点"><input type="checkbox" id="chkNoise"> 噪音节点</label>
   <input id="nodeHighlight" placeholder="高亮节点…" autocomplete="off" title="输入关键词，图中匹配的节点保持清晰，其余降低透明度">
   <button id="btnTheme" class="secondary" title="切换浅色/深色主题">🌙</button>
+  <button id="btnCommand" class="secondary" title="打开命令面板（Ctrl+K）">⌘K</button>
   <div id="crumbs"></div>
   <div id="headerInfo"></div>
 </header>
@@ -129,6 +130,14 @@
   <button id="btnStack" class="secondary" title="粘贴错误堆栈并定位到源码符号">⎘ 堆栈</button>
   <button id="btnHelp" class="secondary" title="打开使用说明">❓ 使用说明</button>
 </footer>
+<!-- 命令面板 -->
+<div id="commandModal" class="modal-mask">
+  <div class="modal command-modal">
+    <div class="command-search"><span>⌘</span><input id="commandInput" placeholder="输入命令名称…" autocomplete="off"></div>
+    <div id="commandList" class="command-list"></div>
+    <div class="command-hint">↑↓ 选择 · Enter 执行 · Esc 关闭</div>
+  </div>
+</div>
 <!-- 堆栈定位弹窗 -->
 <div id="stackModal" class="modal-mask">
   <div class="modal stack-modal">
