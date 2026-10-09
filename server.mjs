@@ -64,7 +64,9 @@ function json(req, res, code, obj) {
 }
 
 // ===== 短 TTL 缓存（搜索结果 / 文件列表），reindex 时失效 =====
+// 索引过期（stale）时 TTL 减半：改码后旧结果更快让位，同时避免完全禁缓存打爆 CLI
 const TTL_SEARCH = 20000, TTL_FILES = 30000;
+const staleFactor = () => (indexStale ? 0.5 : 1);
 const searchCache = new Map(); // key -> { at, data }
 const filesCache = { at: 0, data: null };
 function cacheGet(map, key, ttl) {
@@ -122,7 +124,7 @@ const server = createServer(async (req, res) => {
         catch { return json(req, res, 400, { error: '正则表达式无效：' + q }); }
       }
       const cacheKey = q + '|' + (kind || '') + '|' + (useRegex ? 're' : '');
-      const cached = cacheGet(searchCache, cacheKey, TTL_SEARCH);
+      const cached = cacheGet(searchCache, cacheKey, TTL_SEARCH * staleFactor());
       if (cached) return json(req, res, 200, cached);
       const out = await run(['query', q, '--json', '-l', useRegex ? '200' : '40']);
       let list = parseJson(out, []).map((r) => r.node);
@@ -320,7 +322,7 @@ const server = createServer(async (req, res) => {
     }
     // 文件列表（30s 缓存）
     if (path === '/api/files') {
-      if (filesCache.data && Date.now() - filesCache.at < TTL_FILES) return json(req, res, 200, filesCache.data);
+      if (filesCache.data && Date.now() - filesCache.at < TTL_FILES * staleFactor()) return json(req, res, 200, filesCache.data);
       const out = await run(['files', '--json']);
       const data = parseJson(out, []);
       filesCache.at = Date.now();
