@@ -228,7 +228,7 @@
     background: var(--panel-2);
     transition: all 0.2s ease;
   }
-  .hit:hover {
+  .hit:hover, .hit.kbd-active {
     border-color: var(--accent);
     background: var(--panel-3);
     transform: translateX(4px);

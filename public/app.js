@@ -19,6 +19,7 @@ let allFiles = [];
 let viewTransform = { x: 0, y: 0, k: 1 };
 let expanding = false;
 let showNoise = false; // 噪音节点开关：默认关闭=过滤不显示，打开=全部显示
+try { showNoise = localStorage.getItem('cgv-noise') === '1'; } catch (e) { /* 隐私模式忽略 */ }
 let renderAllNodes = false; // 大图精简渲染：默认只渲染靠近中心的前 MAX_VISIBLE 个节点，角标可切换显示全部
 
 // 噪音节点规则（通用模式，跨语言跨项目生效）：
@@ -323,6 +324,7 @@ function renderFileHits(title, urlPath, hits, kind = '接口文件') {
 
 // 统一绑定搜索结果/文件符号的命中项：主体点击=单层图，⧉ 按钮=全链路（Shift+点击=向上链路）
 function bindHits(root) {
+  resFocusReset();
   root.querySelectorAll('.hit[data-symbol]').forEach(el => {
     el.onclick = () => startGraph(el.dataset.symbol, el.dataset.name, el.dataset.file);
     const tb = el.querySelector('.trace-btn');
@@ -990,9 +992,31 @@ async function showFileSymbols(file) {
   } catch (e) { notice('加载文件符号失败：' + e.message); }
 }
 
+// 搜索结果键盘导航：↑/↓ 移动高亮，Enter 打开当前项（无高亮则执行搜索）；结果列表重建后重置
+let resIdx = -1;
+function resItems() { return [...$('#resultsBody').querySelectorAll('.hit[data-symbol]')]; }
+function resHighlight(items) {
+  items.forEach((el, i) => el.classList.toggle('kbd-active', i === resIdx));
+  const cur = items[resIdx];
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
+}
+function resMove(delta) {
+  const items = resItems();
+  if (!items.length) return;
+  resIdx = (resIdx + delta + items.length) % items.length;
+  resHighlight(items);
+}
+function resFocusReset() { resIdx = -1; resItems().forEach(el => el.classList.remove('kbd-active')); }
+
 $('#btnSearch').onclick = doSearch;
 $('#q').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doSearch();
+  if (e.key === 'ArrowDown') { e.preventDefault(); resMove(1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); resMove(-1); }
+  else if (e.key === 'Enter') {
+    const items = resItems();
+    if (resIdx >= 0 && items[resIdx]) { e.preventDefault(); items[resIdx].click(); }
+    else doSearch();
+  }
   else if (e.key === 'Escape') { e.target.value = ''; e.target.blur(); }
 });
 // footer 右侧"使用说明"弹窗：按钮打开，✕ / 遮罩 / Esc 关闭
@@ -1039,11 +1063,20 @@ window.addEventListener('mouseup', () => {
   if (!resizingSrc) return;
   resizingSrc = false;
   document.body.style.userSelect = '';
+  // 面板宽度持久化：下次打开恢复手动调整的宽度
+  try { localStorage.setItem('cgv-srcw', $('#src').style.width); } catch (e) { /* 隐私模式忽略 */ }
 });
+// 启动恢复上次调整的源码面板宽度
+try {
+  const savedW = localStorage.getItem('cgv-srcw');
+  if (savedW) $('#src').style.width = savedW;
+} catch (e) { /* 隐私模式忽略 */ }
 $('#btnUndo').onclick = undoExpand;
-// 噪音节点开关：关闭=过滤不显示，打开=全部显示
+// 噪音节点开关：关闭=过滤不显示，打开=全部显示（选择持久化到 localStorage）
+$('#chkNoise').checked = showNoise;
 $('#chkNoise').addEventListener('change', () => {
   showNoise = $('#chkNoise').checked;
+  try { localStorage.setItem('cgv-noise', showNoise ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
   relayout();
 });
 // 大图角标：点击切换「显示全部 / 精简渲染」，并重置视图让新增节点可见
@@ -1330,6 +1363,8 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Escape') {
     // 路径查找模式：Esc 优先退出
     if (pathMode || pathHL.nodes.size) { clearPath(); relayout(); return; }
+    // 结果面板打开时：Esc 先关面板
+    if ($('#results').style.display === 'flex') { showPanel('none'); return; }
     // 关闭 notice（含 loading 态），并清空节点高亮；输入框内的 ESC 由各自元素处理
     clearTimeout(notice._t);
     const noticeEl = $('#notice');
