@@ -219,6 +219,9 @@
   .back { font-size: 13px; color: var(--accent); cursor: pointer; padding: 6px 8px 10px; display: flex; align-items: center; gap: 6px; }
   .back:hover { text-decoration: underline; }
 
+  .hit-group { padding: 6px 14px 2px; font-size: 11px; font-weight: 600; color: var(--text-3); border-top: 1px solid var(--border); cursor: default; user-select: none; }
+  .hit-group:first-child { border-top: none; }
+  .hit-group span { color: var(--text-3); font-weight: 400; }
   .hit {
     padding: 10px 14px;
     border-radius: 10px;
@@ -372,6 +375,14 @@
   .modal-foot button { padding: 5px 14px; }
   .modal-foot button.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
   .modal-foot button.primary:hover { color: var(--accent); filter: brightness(1.1); transform: none; box-shadow: none; }
+  .stack-modal { width: min(680px, 94vw); }
+  #stackInput { width: 100%; box-sizing: border-box; resize: vertical; min-height: 150px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); color: var(--text); font: 12px/1.55 Consolas, monospace; }
+  #stackInput:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .stack-results { margin-top: 10px; max-height: 220px; overflow: auto; }
+  .stack-frame { display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .stack-frame:hover { background: var(--accent-dim); }
+  .stack-frame .stack-file { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stack-frame .stack-line { color: var(--text-3); font: 11px Consolas, monospace; }
 
   @media (max-width: 1100px) {
     .panel { position: absolute; top: 0; bottom: 0; z-index: 20; box-shadow: 0 0 24px rgba(0,0,0,.5); }

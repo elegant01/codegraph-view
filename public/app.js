@@ -195,17 +195,33 @@ async function doSearch() {
     showPanel('results');
     $('#resultsTitle').textContent = '🔍 搜索结果';
     $('#resultsSub').textContent = `「${q}」共 ${hits.length} 个匹配，点击查看调用图 · 右侧「⧉ 链路」展开全部方法链`;
-    $('#resultsBody').innerHTML = hits.length
-      ? hits.map(h =>
-        `<div class="hit" data-symbol="${escAttr(h.qualifiedName || h.name)}" data-name="${escAttr(h.name)}" data-file="${escAttr(h.filePath)}">
-           <div class="row1">${badge(h.kind)}<span class="nm" title="${escAttr(h.name)}">${esc(h.name)}</span><span class="trace-btn" title="点击=向下展开它调用的全部方法链 · Shift+点击=向上展开谁调用了它">⧉ 链路</span></div>
-           <div class="meta" title="${escAttr(h.filePath + ':' + h.startLine)}">${esc(h.filePath)}:${h.startLine}</div>
-         </div>`).join('')
-      : '<div class="hit">没有匹配的符号</div>';
+    $('#resultsBody').innerHTML = hits.length ? renderGroupedHits(hits) : '<div class="hit">没有匹配的符号</div>';
     bindHits($('#resultsBody'));
     updateHeaderInfo(`${hits.length} 个搜索结果`);
     clearLoading();
   } catch (e) { notice('搜索失败：' + e.message); clearLoading(); }
+}
+
+// 搜索结果按符号类型分组显示：同组内保持原排序，组头带计数；无 kind 的归入「其他」
+function renderGroupedHits(hits) {
+  const GROUP_ORDER = ['method', 'function', 'class', 'interface', 'type', 'route', 'property', 'variable'];
+  const byKind = new Map();
+  for (const h of hits) {
+    const k = GROUP_ORDER.includes(h.kind) ? h.kind : 'other';
+    if (!byKind.has(k)) byKind.set(k, []);
+    byKind.get(k).push(h);
+  }
+  const hitHtml = (h) =>
+    `<div class="hit" data-symbol="${escAttr(h.qualifiedName || h.name)}" data-name="${escAttr(h.name)}" data-file="${escAttr(h.filePath)}">
+       <div class="row1">${badge(h.kind)}<span class="nm" title="${escAttr(h.name)}">${esc(h.name)}</span><span class="trace-btn" title="点击=向下展开它调用的全部方法链 · Shift+点击=向上展开谁调用了它">⧉ 链路</span></div>
+       <div class="meta" title="${escAttr(h.filePath + ':' + h.startLine)}">${esc(h.filePath)}:${h.startLine}</div>
+     </div>`;
+  return [...byKind.entries()].map(([k, list]) => {
+    const label = k === 'other' ? '其他' : (KIND_LABEL[k] || k);
+    const single = byKind.size === 1; // 只有一组时不显示组头，保持原平铺观感
+    return (single ? '' : `<div class="hit-group" title="${escAttr(label)} · ${list.length} 个">${esc(label)} <span>(${list.length})</span></div>`)
+      + list.map(hitHtml).join('');
+  }).join('');
 }
 
 // 接口 URL / 页面路由定位：/api/xxx/yyy → 匹配 route.ts 接口文件；/xxx/yyy → 匹配 app 目录下 page.tsx 页面
@@ -1104,6 +1120,59 @@ $('#q').addEventListener('keydown', e => {
   }
   else if (e.key === 'Escape') { e.target.value = ''; e.target.blur(); }
 });
+// ===== 堆栈定位：解析 file:line[:column]，按源码符号范围定位并打开调用图 =====
+const stackModal = $('#stackModal');
+const closeStack = () => stackModal.classList.remove('show');
+$('#btnStack').onclick = () => { stackModal.classList.add('show'); $('#stackInput').focus(); };
+$('#stackClose').onclick = closeStack;
+stackModal.addEventListener('click', (e) => { if (e.target === stackModal) closeStack(); });
+
+function parseStackFrames(text) {
+  const frames = [], seen = new Set();
+  // 支持 JS/TS、Python、Go、Java 等常见格式；忽略明显的 node_modules/vendor 外部帧
+  const re = /(?:\bat\s+[^\n(]*\()?((?:[A-Za-z]:[\\/]|\.\.?[\\/]|\/)?[^\s()<>]+?[\\/]?(?:[^\s()<>]*[\\/])*(?:[^\s()<>]*\.(?:js|jsx|ts|tsx|mjs|cjs|mts|cts|go|py|java|rs|php|vue|svelte))):(\d+)(?::\d+)?\)?/g;
+  for (const m of text.matchAll(re)) {
+    const file = m[1].replace(/\\/g, '/').replace(/^\.\//, '');
+    const line = Number(m[2]);
+    if (!file || !line || /(?:^|\/)node_modules\//.test(file) || /(?:^|\/)(?:vendor|dist|build)\//.test(file)) continue;
+    const key = file + ':' + line;
+    if (!seen.has(key)) { seen.add(key); frames.push({ file, line }); }
+  }
+  return frames.slice(0, 50);
+}
+
+async function locateStack() {
+  const frames = parseStackFrames($('#stackInput').value);
+  const out = $('#stackResults');
+  if (!frames.length) { out.innerHTML = '<div class="hit">未识别到项目文件:行号（支持 file.ts:42:8 格式）</div>'; return; }
+  out.innerHTML = '<div class="hit">⏳ 正在匹配符号…</div>';
+  const byFile = new Map();
+  await Promise.all([...new Set(frames.map(f => f.file))].map(async (file) => {
+    try { byFile.set(file, (await api('/symbols', { file })).symbols || []); } catch { byFile.set(file, []); }
+  }));
+  const matches = frames.map(frame => {
+    const symbols = byFile.get(frame.file) || [];
+    // symbols 已按源码顺序返回；取包含该行的最内层符号（startLine 最大者）
+    const candidates = symbols.filter(s => Number(s.line) <= frame.line);
+    const symbol = candidates.length ? candidates[candidates.length - 1] : null;
+    return { ...frame, symbol };
+  });
+  out.innerHTML = matches.map((m, i) => {
+    const title = m.symbol ? `${m.symbol.name} · ${m.symbol.kind}` : '未找到符号';
+    return `<div class="stack-frame" data-i="${i}" title="${escAttr(title)}">
+      <span class="stack-file">${esc(m.file)}</span><span class="stack-line">:${m.line}</span>
+      <span class="nm">${m.symbol ? esc(m.symbol.name) : '—'}</span>
+    </div>`;
+  }).join('');
+  out.querySelectorAll('.stack-frame').forEach(el => el.onclick = () => {
+    const m = matches[Number(el.dataset.i)];
+    if (!m.symbol) { notice(`未找到 ${m.file}:${m.line} 对应的符号`); return; }
+    closeStack();
+    startGraph(m.symbol.name, m.symbol.name, m.file);
+  });
+}
+$('#stackLocate').onclick = locateStack;
+
 // footer 右侧"使用说明"弹窗：按钮打开，✕ / 遮罩 / Esc 关闭
 $('#btnHelp').onclick = () => $('#helpModal').classList.add('show');
 const closeHelp = () => $('#helpModal').classList.remove('show');
