@@ -26,6 +26,8 @@ const HOST = hostIdx >= 0 && argv[hostIdx + 1] ? String(argv[hostIdx + 1]) : (pr
 const portArg = argv.find(a => /^\d+$/.test(a));
 const PORT = clampInt(portArg ?? process.env.PORT ?? 39267, 39267, 1, 65535);
 const EXPOSED = !/^(127\.|localhost$|::1$|\[::1\]$)/.test(HOST);
+// --json：结构化输出启动信息（供脚本/CI 判断端口与就绪状态）；正常文本输出保持不变
+const JSON_OUT = argv.includes('--json');
 
 const { run, useBundled } = createRunner({ root: ROOT, pkgDir: PKG });
 const routeParser = createRouteParser({ root: ROOT, run });
@@ -361,13 +363,19 @@ server.on('error', (e) => {
   process.exit(1);
 });
 server.listen(PORT, HOST, async () => {
-  console.log(`CodeGraph Viz: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}  (项目: ${ROOT})`);
-  if (EXPOSED) console.log(`[警告] 服务绑定在 ${HOST}，局域网/外部可访问本机源码与接口，仅在可信网络使用`);
+  const url = `http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`;
+  if (JSON_OUT) {
+    // 结构化输出：脚本用 await readiness 后 JSON.parse(stdout) 即可拿到端口与状态
+    console.log(JSON.stringify({ ok: true, url, port: PORT, host: HOST, root: ROOT, exposed: EXPOSED, pid: process.pid }));
+  } else {
+    console.log(`CodeGraph Viz: ${url}  (项目: ${ROOT})`);
+    if (EXPOSED) console.log(`[警告] 服务绑定在 ${HOST}，局域网/外部可访问本机源码与接口，仅在可信网络使用`);
+  }
   // 启动探测：确认 codegraph 可用并记录版本（输出格式漂移告警见 textparse.warnIfFormatDrift）
   try {
     const v = (await run(['--version'], { timeout: 10000 })).trim().split('\n')[0];
-    if (v) console.log(`codegraph: ${v}${useBundled ? ' (bundled)' : ' (PATH)'}`);
+    if (v && !JSON_OUT) console.log(`codegraph: ${v}${useBundled ? ' (bundled)' : ' (PATH)'}`);
   } catch (e) {
-    console.log('[警告] codegraph 不可用：' + ((e && e.message) || e) + '，搜索/调用图将失败');
+    if (!JSON_OUT) console.log('[警告] codegraph 不可用：' + ((e && e.message) || e) + '，搜索/调用图将失败');
   }
 });
