@@ -81,6 +81,19 @@ test('未知路径返回 404 JSON', async () => {
   assert.deepEqual(await res.json(), { error: 'not found' });
 });
 
+test('GET /api/trace/stream 缺少 symbol 返回 400', async () => {
+  const res = await fetch(`${BASE}/api/trace/stream`);
+  assert.equal(res.status, 400);
+  assert.deepEqual(await res.json(), { error: 'missing ?symbol=' });
+});
+
+test('旧 trace 轮询接口已移除', async () => {
+  for (const path of ['/api/trace', '/api/trace/progress', '/api/trace/cancel']) {
+    const res = await fetch(`${BASE}${path}`);
+    assert.equal(res.status, 404, path);
+  }
+});
+
 test('GET /api/status 返回服务状态结构', async () => {
   const res = await fetch(BASE + '/api/status');
   assert.equal(res.status, 200);
