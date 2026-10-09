@@ -28,6 +28,8 @@ const PORT = clampInt(portArg ?? process.env.PORT ?? 39267, 39267, 1, 65535);
 const EXPOSED = !/^(127\.|localhost$|::1$|\[::1\]$)/.test(HOST);
 // --json：结构化输出启动信息（供脚本/CI 判断端口与就绪状态）；正常文本输出保持不变
 const JSON_OUT = argv.includes('--json');
+// --read-only：只读分享模式，禁用 reindex 等写操作接口，可安全部署到公共地址
+const READ_ONLY = argv.includes('--read-only');
 
 const { run, useBundled } = createRunner({ root: ROOT, pkgDir: PKG });
 const routeParser = createRouteParser({ root: ROOT, run });
@@ -224,8 +226,9 @@ const server = createServer(async (req, res) => {
       }
       return json(req, res, 200, out);
     }
-    // 重新建立索引：single-flight + 5s 冷却，防连点/并发写坏索引
+    // 重新建立索引：single-flight + 5s 冷却，防连点/并发写坏索引；--read-only 模式禁用
     if (path === '/api/reindex') {
+      if (READ_ONLY) return json(req, res, 403, { error: '只读模式（--read-only）下禁止重建索引' });
       if (reindexState.running) return json(req, res, 409, { error: '索引正在重建中，请等待当前任务完成' });
       if (Date.now() - reindexState.lastAt < 5000) return json(req, res, 429, { error: '索引刚重建过，请稍候几秒再试' });
       reindexState.running = true;
@@ -253,7 +256,7 @@ const server = createServer(async (req, res) => {
     }
     // 服务状态：索引过期提示 / 运行信息
     if (path === '/api/status') {
-      return json(req, res, 200, { stale: indexStale, staleFile, reindexing: reindexState.running, bundled: useBundled, exposed: EXPOSED });
+      return json(req, res, 200, { stale: indexStale, staleFile, reindexing: reindexState.running, bundled: useBundled, exposed: EXPOSED, readOnly: READ_ONLY });
     }
     // 全链路展开（SSE 流式）：进度事件实时推送，客户端断开即取消后端展开
     if (path === '/api/trace/stream') {
@@ -370,6 +373,7 @@ server.listen(PORT, HOST, async () => {
   } else {
     console.log(`CodeGraph Viz: ${url}  (项目: ${ROOT})`);
     if (EXPOSED) console.log(`[警告] 服务绑定在 ${HOST}，局域网/外部可访问本机源码与接口，仅在可信网络使用`);
+    if (READ_ONLY) console.log('[只读模式] reindex 接口已禁用，适合部署到公共地址分享');
   }
   // 启动探测：确认 codegraph 可用并记录版本（输出格式漂移告警见 textparse.warnIfFormatDrift）
   try {
