@@ -43,10 +43,23 @@ function addNode(name, file, kind, line) {
   if (!graph.nodes.has(key)) graph.nodes.set(key, { key, name, label: name, query: name, file, kind, line: line || null, expanded: false });
   return graph.nodes.get(key);
 }
-function addEdge(aKey, bKey) { if (aKey !== bKey) graph.edges.add(aKey + SEP + bKey); }
-function callersOf(key) { const r = []; for (const e of graph.edges) { const i = e.indexOf(SEP); if (e.slice(i + 1) === key) r.push(e.slice(0, i)); } return r; }
-function calleesOf(key) { const r = []; for (const e of graph.edges) { const i = e.indexOf(SEP); if (e.slice(0, i) === key) r.push(e.slice(i + 1)); } return r; }
+// 邻接表：addEdge 时同步维护，callersOf/calleesOf 由 O(n) 全边扫描降为 O(1) 取表
+const adjIn = new Map();  // key -> Set<callerKey>
+const adjOut = new Map(); // key -> Set<calleeKey>
+function adjAdd(map, a, b) { if (!map.has(a)) map.set(a, new Set()); map.get(a).add(b); }
+function addEdge(aKey, bKey) {
+  if (aKey === bKey || graph.edges.has(aKey + SEP + bKey)) return;
+  graph.edges.add(aKey + SEP + bKey);
+  adjAdd(adjOut, aKey, bKey);
+  adjAdd(adjIn, bKey, aKey);
+}
+function callersOf(key) { return adjIn.has(key) ? [...adjIn.get(key)] : []; }
+function calleesOf(key) { return adjOut.has(key) ? [...adjOut.get(key)] : []; }
 function neighborsOf(key) { return callersOf(key).concat(calleesOf(key)); }
+function clearGraphEdges() {
+  graph.edges.clear();
+  adjIn.clear(); adjOut.clear();
+}
 
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function escAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
@@ -439,7 +452,7 @@ async function startGraph(query, name, file) {
   loading('正在加载调用图：' + name);
   try {
     const data = await api('/graph', file ? { symbol: query, file } : { symbol: query });
-    graph.nodes.clear(); graph.edges.clear();
+    graph.nodes.clear(); clearGraphEdges();
     expandStack.length = 0;
     const center = addNode(name, file || null, null);
     center.query = query;
@@ -512,7 +525,7 @@ function startTrace(query, name, file, direction = 'down') {
     let data;
     try { data = JSON.parse(e.data); } catch { notice('链路数据解析失败'); clearLoading(); return; }
     if (!data.nodes || !data.nodes.length) { notice('未找到可展开的调用链路'); clearLoading(); return; }
-    graph.nodes.clear(); graph.edges.clear();
+    graph.nodes.clear(); clearGraphEdges();
     expandStack.length = 0;
     const refs = data.nodes.map(n => addNode(n.name, n.filePath, n.kind));
     for (const [a, b] of data.edges || []) {
@@ -567,6 +580,14 @@ function restoreSnapshot(snap) {
   graph.nodes = snap.nodes;
   graph.edges = snap.edges;
   graph.centerKey = snap.centerKey;
+  // 快照只存了边集合，邻接索引需按边集重建
+  adjIn.clear(); adjOut.clear();
+  for (const e of graph.edges) {
+    const i = e.indexOf(SEP);
+    const a = e.slice(0, i), b = e.slice(i + 1);
+    adjAdd(adjOut, a, b);
+    adjAdd(adjIn, b, a);
+  }
 }
 // 撤销最近一次展开，恢复展开前的图
 function undoExpand() {
@@ -1380,7 +1401,7 @@ $('#btnReset').onclick = () => {
   cancelTrace(true);
   history.length = 0;
   expandStack.length = 0;
-  graph.nodes.clear(); graph.edges.clear(); graph.centerKey = null;
+  graph.nodes.clear(); clearGraphEdges(); graph.centerKey = null;
   hoverKey = null; clickKey = null; // 清空图时同步清掉全链路高亮状态
   clearPath();
   $('#crumbs').innerHTML = '';
