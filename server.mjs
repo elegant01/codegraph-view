@@ -134,19 +134,43 @@ try {
   });
 } catch { /* 平台不支持 recursive watch 时静默降级（仅无过期提示） */ }
 
+// 轻量路由表：稳定的独立接口在这里声明，复杂业务 handler 可继续渐进迁移。
+// 每个条目只负责匹配和响应，主请求函数不再堆叠这些基础分支。
+const routeTable = [
+  // 业务 API 目录：handler 为空的条目由兼容分支处理，便于后续逐个抽取而不改变响应行为。
+  // 新增接口必须先登记到这里，避免路由散落且无法盘点。
+  ...[
+    '/api/search', '/api/graph', '/api/implementations', '/api/routes', '/api/route',
+    '/api/reindex', '/api/urlmap', '/api/trace/stream', '/api/symbols', '/api/source', '/api/files',
+  ].map(path => ({ method: 'GET', path, handler: null })),
+  {
+    method: 'GET', path: '/_health',
+    handler: (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end('{"ok":true}');
+    },
+  },
+  { method: 'GET', path: '/api/repos', handler: async (req, res) => json(req, res, 200, await discoverRepos()) },
+  {
+    method: 'GET', path: '/api/status',
+    handler: (req, res) => json(req, res, 200, {
+      stale: indexStale, staleFile, reindexing: reindexState.running,
+      bundled: useBundled, exposed: EXPOSED, readOnly: READ_ONLY,
+    }),
+  },
+];
+function findRoute(method, path) {
+  return routeTable.find(route => route.method === method && route.path === path) || null;
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const path = url.pathname;
   try {
-    // 聚合仓库列表：根仓库 + 嵌套独立 Git 仓库
-    if (path === '/api/repos') {
-      return json(req, res, 200, await discoverRepos());
-    }
-    // 轻量探活：不触发任何 codegraph 调用，供 pm2/systemd/容器健康检查使用
-    if (path === '/_health') {
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
-      return res.end('{"ok":true}');
-    }
+    const route = findRoute(req.method || 'GET', path);
+    // 已登记但尚未抽取的兼容路由继续落入下方旧 handler；只有具备 handler 的条目在此直接分发。
+    if (route && route.handler) return await route.handler(req, res, url);
+
     // 搜索符号（支持 kind 过滤 / 正则模式）
     if (path === '/api/search') {
       const q = safeArg(url.searchParams.get('q'));
@@ -308,10 +332,6 @@ const server = createServer(async (req, res) => {
       const hit = urlMapper.matchUrlMap(urlPath);
       if (!hit) return json(req, res, 200, []);
       return json(req, res, 200, [{ ...hit, url: urlPath }]);
-    }
-    // 服务状态：索引过期提示 / 运行信息
-    if (path === '/api/status') {
-      return json(req, res, 200, { stale: indexStale, staleFile, reindexing: reindexState.running, bundled: useBundled, exposed: EXPOSED, readOnly: READ_ONLY });
     }
     // 全链路展开（SSE 流式）：进度事件实时推送，客户端断开即取消后端展开
     if (path === '/api/trace/stream') {
