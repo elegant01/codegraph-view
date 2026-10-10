@@ -3,7 +3,8 @@
 // 默认仅监听 127.0.0.1（本机工具，防局域网访问源码）；需要共享时显式 --host 或 HOST 环境变量
 import { createServer } from 'node:http';
 import { readFile, stat as fsStat, readdir } from 'node:fs/promises';
-import { watch } from 'node:fs';
+import { watch, readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { join, extname, normalize, relative, isAbsolute } from 'node:path';
@@ -121,14 +122,52 @@ function invalidateAll() {
 let indexStale = false;
 let staleFile = null;
 let reindexState = { running: false, lastAt: 0 };
+// Windows/网络盘上 fs.watch 会对「仅元数据变化」（atime/属性位/杀软扫描/同步工具）报 change，
+// mtime 也不可靠（实测存在 mtime 比当前时间还晚的脏数据）。改用内容哈希甄别：
+// 启动后异步为源码文件建 sha1 基线，watch 事件只有内容哈希真变了才提示过期。
+const fileHashes = new Map(); // 相对路径 -> sha1
+let hashBaselineReady = false;
+const IGNORE_WATCH = /(^|[\\/])(\.git|\.codegraph|node_modules|vendor|dist|build|out|\.next|\.nuxt|\.idea|\.vscode|coverage|logs?|tmp|temp)([\\/]|$)/;
+const SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|go|php|py|java|rs|vue|svelte)$/;
+function hashFileContent(abs) {
+  try { return createHash('sha1').update(readFileSync(abs)).digest('hex'); } catch { return null; }
+}
+// 异步遍历建基线（不阻塞服务启动；大项目几秒级）
+setImmediate(() => {
+  const t0 = Date.now();
+  const stack = [''];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try { entries = readdirSync(join(ROOT, dir || '.'), { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const rel = dir ? dir + '\\' + e.name : e.name;
+      if (e.isDirectory()) { if (!IGNORE_WATCH.test(rel + '\\')) stack.push(rel); continue; }
+      if (!SOURCE_EXT.test(e.name)) continue;
+      const h = hashFileContent(join(ROOT, rel));
+      if (h) fileHashes.set(rel, h);
+    }
+  }
+  hashBaselineReady = true;
+  console.log(`[watch] 哈希基线就绪：${fileHashes.size} 个源码文件，耗时 ${Date.now() - t0}ms`);});
 try {
-  const IGNORE_WATCH = /(^|[\\/])(\.git|\.codegraph|node_modules|vendor|dist|build|out|\.next|\.nuxt|\.idea|\.vscode|coverage|logs?|tmp|temp)([\\/]|$)/;
-  const SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|go|php|py|java|rs|vue|svelte)$/;
   let debounce = null;
   watch(ROOT, { recursive: true }, (event, filename) => {
     if (!filename || indexStale || reindexState.running) return;
     // 只有源码文件变更才提示过期——日志/缓存/IDE 文件变更不该惊动用户
     if (IGNORE_WATCH.test(filename) || !SOURCE_EXT.test(filename)) return;
+    const abs = join(ROOT, filename);
+    const h = hashFileContent(abs);
+    const base = fileHashes.get(filename);
+    if (base === undefined) {
+      // 基线未就绪时的早期事件只记录不告警；就绪后出现的未知文件 = 新建源码文件，算真实变更
+      if (h) fileHashes.set(filename, h);
+      if (!hashBaselineReady || h === null) return;
+    } else if (h === base) {
+      return; // 内容未变（仅元数据/mtime 变化），忽略
+    } else {
+      fileHashes.set(filename, h); // 内容真变了：更新基线
+    }
     clearTimeout(debounce);
     debounce = setTimeout(() => { indexStale = true; staleFile = filename; }, 500);
   });
