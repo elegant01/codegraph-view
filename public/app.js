@@ -9,6 +9,8 @@ const g = (tag, attrs) => {
 };
 const KIND_LABEL = { function:'函数', method:'方法', class:'类', interface:'接口', type:'类型', property:'属性', variable:'变量', route:'路由' };
 const KIND_CLASS = { function:'function', method:'method', class:'class', interface:'interface', type:'type', property:'property', variable:'variable', route:'route' };
+// 卡片左侧图标块的字形（Dify 节点风格：彩色圆角方块 + 类型字符）
+const KIND_GLYPH = { function:'ƒ', method:'M', class:'C', interface:'I', type:'T', property:'P', variable:'V', route:'R' };
 
 // ===== 图数据模型（支持多级展开）=====
 const SEP = '';
@@ -71,6 +73,8 @@ function addEdge(aKey, bKey) {
 function callersOf(key) { return adjIn.has(key) ? [...adjIn.get(key)] : []; }
 function calleesOf(key) { return adjOut.has(key) ? [...adjOut.get(key)] : []; }
 function neighborsOf(key) { return callersOf(key).concat(calleesOf(key)); }
+// 拖动卡片手动摆放的位置（key -> {x,y,layer}），优先于自动布局；重开图/重置时清除
+const posOverride = new Map();
 function clearGraphEdges() {
   graph.edges.clear();
   adjIn.clear(); adjOut.clear();
@@ -134,22 +138,6 @@ async function api(path, params, opts) {
   return data;
 }
 
-// ===== 最近搜索（localStorage，最多 12 条，datalist 下拉提示） =====
-function loadRecent() {
-  try { return JSON.parse(localStorage.getItem('cgv-recent') || '[]'); } catch { return []; }
-}
-function saveRecent(q) {
-  try {
-    const list = loadRecent().filter(x => x !== q);
-    list.unshift(q);
-    localStorage.setItem('cgv-recent', JSON.stringify(list.slice(0, 12)));
-    renderRecent();
-  } catch { /* 隐私模式忽略 */ }
-}
-function renderRecent() {
-  $('#recentList').innerHTML = loadRecent().map(q => `<option value="${escAttr(q)}">`).join('');
-}
-
 // ===== 缩放/平移 =====
 function applyTransform() { viewport.setAttribute('transform', `translate(${viewTransform.x.toFixed(2)}, ${viewTransform.y.toFixed(2)}) scale(${viewTransform.k.toFixed(4)})`); }
 function updateZoomLevel() { $('#zoomLevel').textContent = Math.round(viewTransform.k * 100) + '%'; }
@@ -186,6 +174,65 @@ $('#zoomIn').onclick = () => zoomBy(1.25);
 $('#zoomOut').onclick = () => zoomBy(0.8);
 $('#zoomReset').onclick = resetView;
 
+// ===== 节点拖动：按住卡片拖到任意位置（覆盖自动布局，重开图/重置时清除） =====
+let dragNode = null;   // { key, el, startClient, startGraph, startPos, moved }
+let didDragNode = false; // 拖动结束后抑制紧随的 click，避免误触发展开/切中心
+// 屏幕坐标 → 图坐标（经 group 变换与 viewBox 映射反算）
+function clientToGraph(e) {
+  const m = viewport.getScreenCTM();
+  if (!m) return { x: 0, y: 0 };
+  return new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse());
+}
+// 拖动时实时重算与该节点相连的边
+function updateNodeEdges(key) {
+  if (!lastLayout || !lastLayout.boxes) return;
+  const sel = `.edge[data-a="${CSS.escape(key)}"], .edge[data-b="${CSS.escape(key)}"]`;
+  document.querySelectorAll(sel).forEach(el => {
+    const pa = lastLayout.pos.get(el.dataset.a), pb = lastLayout.pos.get(el.dataset.b);
+    const ba = lastLayout.boxes.get(el.dataset.a), bb = lastLayout.boxes.get(el.dataset.b);
+    if (!pa || !pb || !ba || !bb) return;
+    el.setAttribute('d', edgePath(pa, pb, ba, bb, el.dataset.cycle === '1', +el.dataset.idx || 0));
+  });
+}
+viewport.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  const n = e.target.closest && e.target.closest('.node');
+  if (!n || !n.dataset.key || !lastLayout) return;
+  const p = lastLayout.pos.get(n.dataset.key);
+  if (!p) return;
+  e.stopPropagation(); // 落在卡片上时不触发画布平移
+  dragNode = { key: n.dataset.key, el: n, startClient: { x: e.clientX, y: e.clientY }, startGraph: clientToGraph(e), startPos: { x: p.x, y: p.y }, moved: false };
+});
+window.addEventListener('mousemove', (e) => {
+  if (!dragNode) return;
+  if (!dragNode.moved) {
+    // 4px 阈值内视为点击，不进入拖动
+    if (Math.abs(e.clientX - dragNode.startClient.x) + Math.abs(e.clientY - dragNode.startClient.y) <= 4) return;
+    dragNode.moved = true;
+    dragNode.el.classList.add('dragging');
+    hoverKey = null; hideTip(); // 拖动期间收起悬浮代码块
+    if (clickKey) applyChainHighlight(clickKey); else clearChainHighlight();
+  }
+  const cur = clientToGraph(e);
+  const layer = lastLayout.pos.get(dragNode.key)?.layer ?? 0;
+  const np = { x: dragNode.startPos.x + (cur.x - dragNode.startGraph.x), y: dragNode.startPos.y + (cur.y - dragNode.startGraph.y), layer };
+  posOverride.set(dragNode.key, np);
+  lastLayout.pos.set(dragNode.key, np);
+  dragNode.el.style.setProperty('--tx', np.x + 'px');
+  dragNode.el.style.setProperty('--ty', np.y + 'px');
+  updateNodeEdges(dragNode.key);
+});
+window.addEventListener('mouseup', () => {
+  if (!dragNode) return;
+  if (dragNode.moved) { didDragNode = true; drawMinimap(); }
+  dragNode.el.classList.remove('dragging');
+  dragNode = null;
+});
+// 拖动后的 click 不触发展开/切中心（捕获阶段拦截，先于节点自身的 onclick）
+viewport.addEventListener('click', (e) => {
+  if (didDragNode) { e.stopPropagation(); e.preventDefault(); didDragNode = false; }
+}, true);
+
 function showPanel(name) {
   $('#filePanel').style.display = name === 'files' ? 'flex' : 'none';
   $('#results').style.display = name === 'results' ? 'flex' : 'none';
@@ -197,13 +244,12 @@ async function doSearch() {
   loading('正在搜索：' + q);
   try {
     // 输入以 / 开头（如 /api/activity/DanceImage/list）时按接口 URL 定位
-    if (q.startsWith('/')) { saveRecent(q); return searchByUrl(q); }
+    if (q.startsWith('/')) { return searchByUrl(q); }
     const kind = $('#kindFilter').value;
     const params = { q };
     if (kind && kind !== 'all') params.kind = kind;
     if ($('#chkRegex').checked) params.regex = '1';
     const hits = await api('/search', params);
-    saveRecent(q);
     showPanel('results');
     $('#resultsTitle').textContent = '🔍 搜索结果';
     $('#resultsSub').textContent = `「${q}」共 ${hits.length} 个匹配，点击查看调用图 · 右侧「⧉ 链路」展开全部方法链`;
@@ -444,6 +490,7 @@ function highlightCode(code) {
 let curSource = { symbol: '', file: '', raw: '' }; // 当前源码面板内容（复制按钮用）
 function showSource(data, file) {
   $('#src').style.display = 'flex';
+  updateSrcFloat(); // 悬浮面板打开，minimap/角标让位
   $('#srcTitle').textContent = '📄 ' + data.symbol;
   $('#srcSub').textContent = file || '';
   const raw = data.source || '';
@@ -503,7 +550,7 @@ async function startGraph(query, name, file) {
   loading('正在加载调用图：' + name);
   try {
     const data = await api('/graph', file ? { symbol: query, file } : { symbol: query });
-    graph.nodes.clear(); clearGraphEdges();
+    graph.nodes.clear(); clearGraphEdges(); posOverride.clear();
     expandStack.length = 0;
     const center = addNode(name, file || null, null);
     center.query = query;
@@ -576,7 +623,7 @@ function startTrace(query, name, file, direction = 'down') {
     let data;
     try { data = JSON.parse(e.data); } catch { notice('链路数据解析失败'); clearLoading(); return; }
     if (!data.nodes || !data.nodes.length) { notice('未找到可展开的调用链路'); clearLoading(); return; }
-    graph.nodes.clear(); clearGraphEdges();
+    graph.nodes.clear(); clearGraphEdges(); posOverride.clear();
     expandStack.length = 0;
     const refs = data.nodes.map(n => addNode(n.name, n.filePath, n.kind));
     for (const [a, b] of data.edges || []) {
@@ -648,8 +695,11 @@ function undoExpand() {
   relayout(); // relayout 内部会更新状态栏
 }
 
-// 点击节点：展开它的调用关系并入图
-async function expandNode(key) {
+// 点击节点：沿流程方向展开调用关系并入图。
+// 方向规则：中心右侧（下游）节点只并入「它调用的」，左侧（上游）只并入「调用它的」——
+// 否则点开下游的 C 会把同样调用 C 的 E/F/G 等旁路调用者也拉进图，污染当前流程。
+// 想看某节点的双向关系：双击它以它为新中心。右键菜单可强制选方向。
+async function expandNode(key, direction = 'auto') {
   const node = graph.nodes.get(key);
   if (!node || expanding) return;
   expanding = true;
@@ -660,7 +710,13 @@ async function expandNode(key) {
     expandStack.push(snap);
     if (expandStack.length > 20) expandStack.shift();
     node.expanded = true;
-    integrate(data, key);
+    // auto 时按节点当前所处层判断方向（点击必发生在渲染后，lastLayout 必有该节点）
+    const layer = lastLayout && lastLayout.pos.has(key) ? lastLayout.pos.get(key).layer : 0;
+    const dir = direction === 'auto' ? (layer > 0 ? 'down' : layer < 0 ? 'up' : 'both') : direction;
+    integrate({
+      callers: dir === 'down' ? [] : (data.callers || []),
+      callees: dir === 'up' ? [] : (data.callees || []),
+    }, key);
     showSource(data, node.file);
     relayout();
     // 高亮本次展开新增的节点，让用户清楚看到"展开到了哪里"
@@ -673,11 +729,11 @@ async function expandNode(key) {
     }
     clearLoading();
     const addedCount = graph.nodes.size - snap.nodes.size;
-    // 只有 graph 接口本身就没返回任何调用者/被调用者，才算"真没有更多"；
+    // 只有该方向上接口本身就没返回任何关系，才算"真没有更多"；
     // 否则即使新增为 0，也只是因为 trace/之前的展开已经把邻居全部加进来了，不应误导用户。
-    const noRelations = !(data.callers && data.callers.length) && !(data.callees && data.callees.length);
-    if (noRelations) notice('该节点没有更多调用关系');
-    else if (addedCount === 0) notice('该节点的调用关系已全部展开');
+    const rel = dir === 'down' ? (data.callees || []) : dir === 'up' ? (data.callers || []) : [...(data.callers || []), ...(data.callees || [])];
+    if (!rel.length) notice(dir === 'down' ? '它没有调用其他符号（已是流程末端）' : dir === 'up' ? '没有其他符号调用它（已是流程起点）' : '该节点没有更多调用关系');
+    else if (addedCount === 0) notice('该方向的调用关系已全部展开');
   } catch (e) {
     restoreSnapshot(snap);
     relayout();
@@ -712,7 +768,26 @@ async function expandCallers(key) {
   finally { expanding = false; }
 }
 
-// ===== 布局：从中心 BFS 分层，左调用者右被调用者 =====
+// Dify/React Flow 风格连线：从源卡片侧边中点水平引出，以水平切线贝塞尔平滑进入目标侧边中点。
+// 模块级函数：relayout 画边与拖动卡片时实时重算共用。
+function edgePath(pa, pb, ba, bb, cycle, edgeIndex) {
+  const toRight = pb.x >= pa.x;
+  const dir = toRight ? 1 : -1;
+  const sx = pa.x + dir * ba.w / 2;
+  const sy = pa.y;
+  const ex = pb.x - dir * (bb.w / 2 + 3); // 3px 间隙留给箭头
+  const ey = pb.y;
+  if (!cycle) {
+    const hx = Math.max(40, Math.abs(ex - sx) * .5);
+    return `M ${sx} ${sy} C ${sx + hx * dir} ${sy}, ${ex - hx * dir} ${ey}, ${ex} ${ey}`;
+  }
+  // 回边（调用环）从上方绕行；并行回边用不同弧度错开，避免重叠
+  const mx = (sx + ex) / 2;
+  const arc = Math.max(48, Math.min(140, Math.abs(sx - ex) * .3)) * (edgeIndex % 2 ? 1 : 1.7);
+  return `M ${sx} ${sy} Q ${mx} ${Math.min(sy, ey) - arc} ${ex} ${ey}`;
+}
+
+// 布局：从中心 BFS 分层，左调用者右被调用者
 function layoutGraph() {
   const layerOf = new Map([[graph.centerKey, 0]]);
   const q = [graph.centerKey];
@@ -725,7 +800,7 @@ function layoutGraph() {
   const byLayer = new Map();
   for (const [k, L] of layerOf) { if (!byLayer.has(L)) byLayer.set(L, []); byLayer.get(L).push(k); }
   const pos = new Map();
-  const CX = 0, CY = 0, colW = hotspotMode ? 290 : 250, rowH = hotspotMode ? 68 : 56;
+  const CX = 0, CY = 0, colW = hotspotMode ? 350 : 310, rowH = hotspotMode ? 92 : 76;
   const order = [...byLayer.keys()].sort((a, b) => Math.abs(a) - Math.abs(b) || a - b);
   const innerY = (k, innerL) => {
     if (innerL == null) return CY;
@@ -750,9 +825,26 @@ function nodeClass(node, layer) {
   return 'callee';
 }
 
+// 节点卡片尺寸：mkNode 与连线锚点共用，保证连线准确落在卡片侧边上
+function nodeBox(node) {
+  const label = node.label;
+  const filePath = node.file ? node.file.replace(/\\/g, '/') : '';
+  const fileName = filePath ? filePath.split('/').pop() : '';
+  const lineLabel = fileName ? `${fileName}${node.line ? ':' + node.line : ''}` : '';
+  const w = Math.min(248, Math.max(150, label.length * 7 + 64, lineLabel.length * 6 + 64));
+  const indegree = callersOf(node.key).length;
+  const hotspot = hotspotMode ? Math.min(1, indegree / 8) : 0;
+  return { w, h: 56 + Math.round(hotspot * 14) };
+}
+
 function relayout() {
   if (!graph.centerKey || graph.nodes.size === 0) return;
   const pos = layoutGraph();
+  // 拖动摆放的位置优先于自动布局（layer 仍用布局值，供回边判断）
+  for (const [k, p] of pos) {
+    const o = posOverride.get(k);
+    if (o) pos.set(k, { x: o.x, y: o.y, layer: p.layer });
+  }
   viewport.innerHTML = '';
 
   // 大图防卡顿：节点过多时只渲染靠近中心的部分（MAX_VISIBLE），其余以角标提示
@@ -764,37 +856,18 @@ function relayout() {
 
   // 箭头标记
   const defs = g('defs', {});
-  const mkMarker = (id, cls) => { const m = g('marker', { id, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 9, markerHeight: 9, orient: 'auto-start-reverse' }); m.appendChild(g('path', { d: 'M 0 0 L 10 5 L 0 10 z', class: cls })); return m; };
+  const mkMarker = (id, cls) => { const m = g('marker', { id, viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }); m.appendChild(g('path', { d: 'M 0 0 L 10 5 L 0 10 z', class: cls })); return m; };
   defs.appendChild(mkMarker('arr', 'marker-arr'));
   defs.appendChild(mkMarker('arrIn', 'marker-arrIn'));
   defs.appendChild(mkMarker('arrOut', 'marker-arrOut'));
   viewport.appendChild(defs);
 
+  // 可见节点的卡片尺寸，连线锚点用
+  const boxes = new Map();
+  for (const k of visibleKeys) boxes.set(k, nodeBox(graph.nodes.get(k)));
+
   // 边（两端都可见才画，避免指向未渲染节点）
   let edgeCount = 0;
-  const edgeCurve = (pa, pb, cycle, edgeIndex) => {
-    const dx = pb.x - pa.x, dy = pb.y - pa.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const startGap = Math.min(92, len * 0.22);
-    const endGap = Math.min(104, len * 0.25);
-    const sx = pa.x + (dx / len) * startGap;
-    const sy = pa.y + (dy / len) * Math.min(18, len * 0.08);
-    const ex = pb.x - (dx / len) * endGap;
-    const ey = pb.y - (dy / len) * Math.min(18, len * 0.08);
-    if (!cycle) {
-      const bend = Math.max(24, Math.min(90, Math.abs(dy) * .22 + 18));
-      const sign = dy === 0 ? (edgeIndex % 2 ? -1 : 1) : Math.sign(dy);
-      const c1x = sx + (ex - sx) * .38;
-      const c2x = sx + (ex - sx) * .62;
-      return `M ${sx} ${sy} C ${c1x} ${sy + bend * sign}, ${c2x} ${ey - bend * sign}, ${ex} ${ey}`;
-    }
-    // 回边从连线侧面绕开，避免与正常调用方向重叠。
-    const normalX = -dy / len, normalY = dx / len;
-    const bend = Math.max(48, Math.min(150, len * .28)) * (edgeIndex % 2 ? -1 : 1);
-    const mx = (sx + ex) / 2 + normalX * bend;
-    const my = (sy + ey) / 2 + normalY * bend;
-    return `M ${sx} ${sy} Q ${mx} ${my} ${ex} ${ey}`;
-  };
   for (const e of graph.edges) {
     const i = e.indexOf(SEP);
     const a = e.slice(0, i), b = e.slice(i + 1);
@@ -810,11 +883,13 @@ function relayout() {
     if (cycle) cls += ' cycle';
     if (pathHL.edges.has(a + SEP + b)) cls += ' on-path';
     viewport.appendChild(g('path', {
-      d: edgeCurve(pa, pb, cycle, edgeCount),
+      d: edgePath(pa, pb, boxes.get(a), boxes.get(b), cycle, edgeCount),
       'class': cls,
       'marker-end': `url(#${marker})`,
       'data-a': a,
-      'data-b': b
+      'data-b': b,
+      'data-cycle': cycle ? '1' : '0',
+      'data-idx': edgeCount
     }));
   }
 
@@ -830,13 +905,17 @@ function relayout() {
   let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
   for (const key of visibleKeys) {
     const p = pos.get(key);
-    minX = Math.min(minX, p.x - 130); maxX = Math.max(maxX, p.x + 130);
-    minY = Math.min(minY, p.y - 30); maxY = Math.max(maxY, p.y + 30);
+    minX = Math.min(minX, p.x - 135); maxX = Math.max(maxX, p.x + 135);
+    minY = Math.min(minY, p.y - 40); maxY = Math.max(maxY, p.y + 40);
   }
   const pad = 30;
-  const vb = { x: minX - pad, y: minY - pad, w: maxX - minX + pad * 2, h: maxY - minY + pad * 2 };
+  // 小图不放大：viewBox 至少为视口像素尺寸，缩放比封顶 100%，避免单节点铺满全屏
+  const rect = svg.getBoundingClientRect();
+  const w0 = maxX - minX + pad * 2, h0 = maxY - minY + pad * 2;
+  const W = Math.max(w0, rect.width), H = Math.max(h0, rect.height);
+  const vb = { x: minX - pad - (W - w0) / 2, y: minY - pad - (H - h0) / 2, w: W, h: H };
   svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
-  lastLayout = { pos, vb, visibleKeys }; // minimap 用
+  lastLayout = { pos, vb, visibleKeys, boxes }; // minimap 与拖动重算连线用
 
   $('#empty').style.display = 'none';
   const hidden = graph.nodes.size - pos.size;
@@ -861,25 +940,27 @@ function mkNode(node, p) {
   const filePath = node.file ? node.file.replace(/\\/g, '/') : '';
   const fileName = filePath ? filePath.split('/').pop() : '';
   const lineLabel = fileName ? `${fileName}${node.line ? ':' + node.line : ''}` : '';
-  const w = Math.min(248, Math.max(126, label.length * 7 + 48, lineLabel.length * 6 + 42));
-  const indegree = callersOf(node.key).length;
-  const hotspot = hotspotMode ? Math.min(1, indegree / 8) : 0;
-  const h = 54 + Math.round(hotspot * 14);
+  const { w, h } = nodeBox(node);
   const cls = nodeClass(node, p.layer) + (node.expanded || node.key === graph.centerKey ? '' : ' leaf');
   const grp = g('g', { 'class': 'node ' + cls, style: `--tx:${p.x}px; --ty:${p.y}px`, 'data-key': node.key, 'data-kind': node.kind || '', 'aria-label': `${label} · ${kindLabel}${lineLabel ? ' · ' + lineLabel : ''}` });
-  grp.appendChild(g('rect', { x: -w / 2, y: -h / 2, width: w, height: h, rx: hotspot ? 8 : 10 }));
-  const t = g('text', { x: 0, y: -8, 'text-anchor': 'middle', 'class': 'node-name' });
-  t.textContent = label.length > 28 ? label.slice(0, 27) + '…' : label;
+  // 卡片底：统一浅色/深色面板底 + 细边框，角色色由图标块承载（Dify 节点风格）
+  grp.appendChild(g('rect', { class: 'card', x: -w / 2, y: -h / 2, width: w, height: h, rx: 12 }));
+  // 左侧类型图标块：彩色圆角方块 + 类型字形
+  const isz = 26, ix = -w / 2 + 10;
+  grp.appendChild(g('rect', { class: 'ico', x: ix, y: -isz / 2, width: isz, height: isz, rx: 7 }));
+  const glyph = g('text', { class: 'ico-glyph', x: ix + isz / 2, y: 4.5, 'text-anchor': 'middle' });
+  glyph.textContent = KIND_GLYPH[node.kind] || 'ƒ';
+  grp.appendChild(glyph);
+  // 标题与元信息左对齐
+  const tx = ix + isz + 9;
+  const t = g('text', { x: tx, y: -3, 'class': 'node-name' });
+  t.textContent = label.length > 24 ? label.slice(0, 23) + '…' : label;
   grp.appendChild(t);
-  const kindText = g('text', { x: 0, y: 9, 'text-anchor': 'middle', 'class': 'node-kind' });
-  kindText.textContent = kindLabel;
-  grp.appendChild(kindText);
-  if (lineLabel) {
-    const metaText = g('text', { x: 0, y: 23, 'text-anchor': 'middle', 'class': 'node-meta' });
-    metaText.textContent = lineLabel.length > 34 ? lineLabel.slice(0, 33) + '…' : lineLabel;
-    metaText.setAttribute('title', filePath + (node.line ? ':' + node.line : ''));
-    grp.appendChild(metaText);
-  }
+  const metaText = g('text', { x: tx, y: 13, 'class': 'node-meta' });
+  const meta = kindLabel + (lineLabel ? ' · ' + lineLabel : '');
+  metaText.textContent = meta.length > 32 ? meta.slice(0, 31) + '…' : meta;
+  if (lineLabel) metaText.setAttribute('title', filePath + (node.line ? ':' + node.line : ''));
+  grp.appendChild(metaText);
   if (node.repo && repoList.length > 1) {
     const repoText = g('text', { x: 0, y: h / 2 + 12, 'text-anchor': 'middle', 'class': 'repo-label' });
     repoText.textContent = `⌂ ${node.repo}`;
@@ -908,7 +989,7 @@ function mkNode(node, p) {
   // 悬浮提示：始终提供（大图省略「点击展开」行以减小体积）
   if (graph.nodes.size <= 200) {
     const title = g('title', {});
-    title.textContent = `${label}\n${node.file || ''}${node.kind ? ' [' + (KIND_LABEL[node.kind] || node.kind) + ']' : ''}${node.expanded ? '' : '\n点击展开它的调用关系'}`;
+    title.textContent = `${label}\n${node.file || ''}${node.kind ? ' [' + (KIND_LABEL[node.kind] || node.kind) + ']' : ''}${node.expanded ? '' : '\n点击沿当前方向展开 · 双击切中心看双向'}`;
     grp.appendChild(title);
   } else {
     const title = g('title', {});
@@ -934,7 +1015,7 @@ function drawMinimap() {
   requestAnimationFrame(() => {
     minimapScheduled = false;
     const cv = $('#minimap');
-    if (!lastLayout || graph.nodes.size < 12) { cv.style.display = 'none'; return; }
+    if (!lastLayout || graph.nodes.size < 4) { cv.style.display = 'none'; return; }
     cv.style.display = 'block';
     const ctx = cv.getContext('2d');
     const { pos, vb, visibleKeys } = lastLayout;
@@ -943,14 +1024,30 @@ function drawMinimap() {
     const s = Math.min(W / vb.w, H / vb.h) * 0.92;
     const ox = (W - vb.w * s) / 2 - vb.x * s;
     const oy = (H - vb.h * s) / 2 - vb.y * s;
-    // 节点点
+    const vset = new Set(visibleKeys);
+    // 连线（先画线，迷你卡片盖在上面）
+    ctx.strokeStyle = 'rgba(148,163,184,.5)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const e of graph.edges) {
+      const i = e.indexOf(SEP);
+      const a = e.slice(0, i), b = e.slice(i + 1);
+      if (!vset.has(a) || !vset.has(b)) continue;
+      const pa = pos.get(a), pb = pos.get(b);
+      if (!pa || !pb) continue;
+      ctx.moveTo(ox + pa.x * s, oy + pa.y * s);
+      ctx.lineTo(ox + pb.x * s, oy + pb.y * s);
+    }
+    ctx.stroke();
+    // 节点画成迷你卡片（近似卡片宽高比），大图缩到很小时保底 4px 仍可见
     for (const key of visibleKeys) {
       const p = pos.get(key);
       if (!p) continue;
+      const bw = Math.max(4, 248 * s), bh = Math.max(2.5, 56 * s);
       if (key === graph.centerKey) ctx.fillStyle = '#fbbf24';
       else if (p.layer < 0) ctx.fillStyle = '#34d399';
       else ctx.fillStyle = '#60a5fa';
-      ctx.fillRect(ox + p.x * s - 1.5, oy + p.y * s - 1.5, 3, 3);
+      ctx.fillRect(ox + p.x * s - bw / 2, oy + p.y * s - bh / 2, bw, bh);
     }
     // 当前视口框：屏幕可视区反算到图坐标（含 viewBox 居中 letterbox 偏移）
     const rect = svg.getBoundingClientRect();
@@ -1000,7 +1097,7 @@ function showCtx(key, x, y) {
   const isCenter = key === graph.centerKey;
   const items = [
     { label: '🎯 以此为中心', act: () => { history.push({ symbol: node.name, file: node.file, key }); expandStack.length = 0; graph.centerKey = key; node.expanded = true; updateCrumbs(); relayout(); } },
-    !isCenter && !node.expanded && { label: '⤵ 展开下层（它调用的）', act: () => expandNode(key) },
+    !isCenter && !node.expanded && { label: '⤵ 展开下层（它调用的）', act: () => expandNode(key, 'down') },
     !isCenter && { label: '⤴ 展开上层（调用它的）', act: () => expandCallers(key) },
     { sep: true },
     node.file && { label: '⧉ 复制文件路径', act: () => copyText(node.file, '已复制路径') },
@@ -1158,37 +1255,46 @@ function renderFiles() {
     .slice(0, 200);
   $('#fileList').innerHTML = list.length
     ? list.map(f =>
-      `<div class="file" data-path="${escAttr(f.path)}" title="该文件含 ${f.nodeCount} 个符号，点击查看">
-         <span class="cnt">${f.nodeCount}</span><span class="path">${esc(f.path)}</span>
+      `<div class="file" data-path="${escAttr(f.path)}" title="该文件含 ${f.nodeCount} 个符号，点击就地展开">
+         <span class="caret">›</span><span class="cnt">${f.nodeCount}</span><span class="path">${esc(f.path)}</span>
        </div>`).join('')
     : '<div class="hit">没有匹配的文件</div>';
-  $('#fileList').querySelectorAll('.file').forEach(el => el.onclick = () => showFileSymbols(el.dataset.path));
+  $('#fileList').querySelectorAll('.file').forEach(el => el.onclick = () => toggleFileSymbols(el, el.dataset.path));
   updateHeaderInfo(`共 ${allFiles.length} 个文件 · 显示 ${list.length} 个`);
 }
-async function showFileSymbols(file) {
-  // 点击后立即切换面板并显示占位，符号多时请求较慢，避免"点了没反应"
-  showPanel('results');
-  $('#resultsTitle').textContent = '📄 文件符号';
-  $('#resultsSub').textContent = file;
-  $('#resultsBody').innerHTML =
-    '<div class="back" id="backToFiles">← 返回文件浏览</div>' +
-    '<div class="hit">⏳ 正在加载符号…</div>';
-  $('#backToFiles').onclick = () => { showPanel('files'); };
+// 文件行内手风琴：点击文件就地展开/收起它的符号列表，文件列表始终可见（不再整页切换走）
+const fileSymsCache = new Map(); // file -> symbols，展开过一次后不重复请求
+async function toggleFileSymbols(rowEl, file) {
+  const next = rowEl.nextElementSibling;
+  if (next && next.classList.contains('file-syms')) { // 已展开 → 收起
+    next.remove();
+    rowEl.classList.remove('open');
+    return;
+  }
+  rowEl.classList.add('open');
+  const box = document.createElement('div');
+  box.className = 'file-syms';
+  box.innerHTML = '<div class="hit" style="cursor:default">⏳ 正在加载符号…</div>';
+  rowEl.after(box);
   try {
-    const data = await api('/symbols', { file });
-    $('#resultsBody').innerHTML =
-      '<div class="back" id="backToFiles">← 返回文件浏览</div>' +
-      (data.symbols.length
-        ? data.symbols.map(s =>
-            `<div class="hit" data-symbol="${escAttr(s.name)}" data-name="${escAttr(s.name)}" data-file="${escAttr(file)}">
-               <div class="row1">${badge(s.kind)}<span class="nm" title="${escAttr(s.name)}">${esc(s.name)}</span><span class="trace-btn" title="点击=向下展开它调用的全部方法链 · Shift+点击=向上">⧉ 链路</span></div>
-               <div class="meta">第 ${s.line} 行</div>
-             </div>`).join('') +
-            (data.truncated ? `<div class="hit" style="cursor:default;opacity:.75">⚠ 共 ${data.total} 个符号，仅显示前 ${data.symbols.length} 个（codegraph 上限），其余请用顶部搜索</div>` : '')
-        : '<div class="hit">该文件没有可识别的符号</div>');
-    bindHits($('#resultsBody'));
-    $('#backToFiles').onclick = () => { showPanel('files'); };
-  } catch (e) { notice('加载文件符号失败：' + e.message); }
+    let symbols = fileSymsCache.get(file);
+    if (!symbols) {
+      const data = await api('/symbols', { file });
+      symbols = data.symbols || [];
+      fileSymsCache.set(file, symbols);
+      if (data.truncated) notice(`该文件共 ${data.total} 个符号，仅显示前 ${symbols.length} 个，其余请用顶部搜索`);
+    }
+    box.innerHTML = symbols.length
+      ? symbols.map(s =>
+        `<div class="hit" data-symbol="${escAttr(s.name)}" data-name="${escAttr(s.name)}" data-file="${escAttr(file)}">
+           <div class="row1">${badge(s.kind)}<span class="nm" title="${escAttr(s.name)}">${esc(s.name)}</span><span class="trace-btn" title="点击=向下展开它调用的全部方法链 · Shift+点击=向上">⧉ 链路</span></div>
+           <div class="meta">第 ${s.line} 行</div>
+         </div>`).join('')
+      : '<div class="hit" style="cursor:default">该文件没有可识别的符号</div>';
+    bindHits(box);
+  } catch (e) {
+    box.innerHTML = `<div class="hit" style="cursor:default">加载失败：${esc(e.message)}</div>`;
+  }
 }
 
 // 搜索结果键盘导航：↑/↓ 移动高亮，Enter 打开当前项（无高亮则执行搜索）；结果列表重建后重置
@@ -1407,6 +1513,16 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#help
 // 弹窗内"试试示例"：关闭弹窗并自动执行演示搜索
 $('#helpTry').onclick = () => { closeHelp(); $('#q').value = '/api/video/audit'; doSearch(); };
 let savedSrcWidth = null; // 拖拽调整过的手动宽度，折叠时保存，展开时恢复
+// 源码面板悬浮在画布上：打开时同步 body 类与 --src-w，让 minimap/角标左移避让
+// （折叠后只是右上角小胶囊，不与底部 minimap 重叠，无需让位）
+function updateSrcFloat() {
+  const p = $('#src');
+  const visible = p.style.display === 'flex';
+  const collapsed = p.classList.contains('collapsed');
+  document.body.classList.toggle('src-open', visible && !collapsed);
+  const w = p.getBoundingClientRect().width || 420;
+  document.body.style.setProperty('--src-w', Math.round(w) + 'px');
+}
 function setSrcCollapsed(collapsed) {
   const panel = $('#src');
   if (collapsed) {
@@ -1418,6 +1534,7 @@ function setSrcCollapsed(collapsed) {
   panel.classList.toggle('collapsed', collapsed);
   $('#srcToggle').textContent = collapsed ? '«' : '»';
   $('#srcToggle').title = collapsed ? '展开源码面板' : '折叠源码面板';
+  updateSrcFloat();
 }
 $('#srcToggle').onclick = () => setSrcCollapsed(!$('#src').classList.contains('collapsed'));
 $('#srcStrip').onclick = () => setSrcCollapsed(false);
@@ -1435,8 +1552,9 @@ srcResizer.addEventListener('mousedown', (e) => {
 window.addEventListener('mousemove', (e) => {
   if (!resizingSrc) return;
   // 拖拽手柄在面板左边界：向左拖=面板加宽（放大），向右拖=收窄（缩小）
-  const w = srcResizer._startW - (e.clientX - srcResizer._startX);
-  $('#src').style.width = Math.max(260, Math.min(900, window.innerWidth - 60, w)) + 'px';
+  const w = Math.max(260, Math.min(900, window.innerWidth - 60, srcResizer._startW - (e.clientX - srcResizer._startX)));
+  $('#src').style.width = w + 'px';
+  document.body.style.setProperty('--src-w', Math.round(w) + 'px'); // minimap 实时让位
 });
 window.addEventListener('mouseup', () => {
   if (!resizingSrc) return;
@@ -1477,6 +1595,24 @@ $('#btnExport').onclick = (e) => {
 document.addEventListener('click', (e) => {
   if (!e.target.closest || !e.target.closest('#exportMenu')) $('#exportMenu').classList.remove('show');
 });
+// 选项弹出层（搜索 ⚙ / 图 ✦）：点击按钮开合，点外部关闭
+function bindOptPop(btnSel, popSel) {
+  const btn = $(btnSel), pop = $(popSel);
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const show = !pop.classList.contains('show');
+    document.querySelectorAll('.optPop.show').forEach(p => p.classList.remove('show'));
+    if (!show) return;
+    const r = btn.getBoundingClientRect();
+    pop.style.top = (r.bottom + 6) + 'px';
+    pop.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+    pop.classList.add('show');
+  });
+  pop.addEventListener('click', e => e.stopPropagation());
+}
+bindOptPop('#btnSearchOpts', '#searchOptsPop');
+bindOptPop('#btnGraphOpts', '#graphOptsPop');
+document.addEventListener('click', () => document.querySelectorAll('.optPop.show').forEach(p => p.classList.remove('show')));
 $('#exportMenu').querySelectorAll('button').forEach(b => b.onclick = () => {
   $('#exportMenu').classList.remove('show');
   ({ svg: exportSVG, png: exportPNG, json: exportJSON, mermaid: exportMermaid })[b.dataset.fmt]();
@@ -1560,7 +1696,8 @@ $('#btnReindex').onclick = async () => {
   loading('正在重新索引，大项目可能需要几十秒…');
   try {
     const data = await api('/reindex');
-    $('#staleBar').style.display = 'none';
+    $('#staleBar').classList.remove('show');
+    try { localStorage.removeItem('cgv-stale-dismissed'); } catch (e) { /* 忽略 */ }
     notice(data.message || '索引已更新');
   } catch (e) {
     notice('重新索引失败：' + e.message);
@@ -1569,19 +1706,26 @@ $('#btnReindex').onclick = async () => {
   }
 };
 $('#btnStaleReindex').onclick = () => $('#btnReindex').click();
-$('#btnStaleDismiss').onclick = () => { $('#staleBar').style.display = 'none'; staleDismissed = true; };
+$('#btnStaleDismiss').onclick = () => {
+  $('#staleBar').classList.remove('show');
+  // 记住已忽略的变更文件：刷新页面后同一个文件不再重复提示（有新文件变更仍会提示）
+  try { localStorage.setItem('cgv-stale-dismissed', $('#staleText').textContent); } catch (e) { /* 隐私模式忽略 */ }
+};
 // 索引过期检测：后端 watch 项目目录，有代码变更时提示重新索引
-let staleDismissed = false;
 async function checkStale() {
   try {
     const s = await api('/status');
-    if (s.stale && !s.reindexing && !staleDismissed) {
-      $('#staleText').textContent = s.staleFile
+    if (s.stale && !s.reindexing) {
+      const text = s.staleFile
         ? `⚠ 检测到代码变更（${s.staleFile}），索引可能已过期`
         : '⚠ 检测到代码变更，索引可能已过期';
-      $('#staleBar').style.display = 'flex';
+      let dismissed = null;
+      try { dismissed = localStorage.getItem('cgv-stale-dismissed'); } catch (e) { /* 忽略 */ }
+      if (dismissed === text) { $('#staleBar').classList.remove('show'); return; }
+      $('#staleText').textContent = text;
+      $('#staleBar').classList.add('show');
     }
-    else $('#staleBar').style.display = 'none';
+    else $('#staleBar').classList.remove('show');
   } catch { /* 状态查询失败静默 */ }
 }
 setInterval(checkStale, 20000);
@@ -1705,9 +1849,22 @@ function hideTip() {
 // 事件委托（mouseover/mouseout 冒泡，relayout 重建 DOM 后无需重新绑定）
 // 优先 hover：鼠标在节点上时显示该节点全链路；移开后若有点击固定高亮则恢复之，否则清除。
 // 注意：click 不走委托——mkNode 的 onclick 里 e.stopPropagation() 会拦截冒泡，故在 onclick 内直接设 clickKey。
+// tooltip 可交互：离开节点后延迟收起，鼠标可移入代码块复制/滚动
+let leaveNodeTimer = null;
+function scheduleLeaveNode() {
+  clearTimeout(leaveNodeTimer);
+  leaveNodeTimer = setTimeout(() => {
+    hoverKey = null;
+    hideTip();
+    if (clickKey) applyChainHighlight(clickKey); // 恢复点击固定的高亮
+    else clearChainHighlight();
+  }, 200);
+}
 viewport.addEventListener('mouseover', (e) => {
+  if (dragNode) return; // 拖动卡片时不触发悬停
   const n = e.target.closest && e.target.closest('.node');
   if (n && n.dataset.key) {
+    clearTimeout(leaveNodeTimer);
     if (hoverKey !== n.dataset.key) { hoverKey = n.dataset.key; applyChainHighlight(n.dataset.key); }
     showTip(n.dataset.key, n);
   }
@@ -1715,20 +1872,21 @@ viewport.addEventListener('mouseover', (e) => {
 viewport.addEventListener('mouseout', (e) => {
   const from = e.target.closest && e.target.closest('.node');
   const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.node') : null;
-  if (from && from !== to) {
-    hoverKey = null;
-    hideTip();
-    if (clickKey) applyChainHighlight(clickKey); // 恢复点击固定的高亮
-    else clearChainHighlight();
-  }
+  if (!from || from === to) return;
+  // 移入悬浮代码块：保持显示与高亮，由 tooltip 的 mouseleave 负责收起
+  const intoTip = e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('#nodeTip');
+  if (intoTip) return;
+  scheduleLeaveNode();
 });
+nodeTip.addEventListener('mouseenter', () => clearTimeout(leaveNodeTimer));
+nodeTip.addEventListener('mouseleave', () => scheduleLeaveNode());
 $('#nodeHighlight').addEventListener('input', () => { highlightKW = $('#nodeHighlight').value; applyHighlight(); });
 $('#nodeHighlight').addEventListener('keydown', e => { if (e.key === 'Escape') { e.target.value = ''; highlightKW = ''; applyHighlight(); e.target.blur(); } });
 // 左侧面板折叠（与右侧源码面板对称）
 function setLeftCollapsed(c) {
   document.body.classList.toggle('left-collapsed', c);
   $('#btnLeftToggle').textContent = c ? '›' : '‹';
-  $('#btnLeftToggle').title = c ? '展开左侧面板' : '折叠左侧面板';
+  $('#btnLeftToggle').dataset.tip = c ? '展开左侧面板' : '折叠左侧面板';
 }
 $('#btnLeftToggle').onclick = () => setLeftCollapsed(!document.body.classList.contains('left-collapsed'));
 $('#leftStrip').onclick = () => setLeftCollapsed(false);
@@ -1763,11 +1921,12 @@ $('#btnReset').onclick = () => {
   cancelTrace(true);
   history.length = 0;
   expandStack.length = 0;
-  graph.nodes.clear(); clearGraphEdges(); graph.centerKey = null;
+  graph.nodes.clear(); clearGraphEdges(); posOverride.clear(); graph.centerKey = null;
   hoverKey = null; clickKey = null; // 清空图时同步清掉全链路高亮状态
   clearPath();
   $('#crumbs').innerHTML = '';
   $('#src').style.display = 'none';
+  updateSrcFloat();
   $('#empty').style.display = 'flex';
   viewport.innerHTML = '';
   $('#minimap').style.display = 'none';
@@ -1777,17 +1936,28 @@ $('#btnReset').onclick = () => {
   showPanel('files');
 };
 
-// 主题切换：点击在浅色/深色间切换，记忆到 localStorage（head 内脚本负责初始加载）
+// 主题：默认跟随系统（head 内脚本做首次设置，这里监听系统切换实时跟随）；
+// 用户手动切换后才记住选择（localStorage），之后不再跟随系统
+const themeMedia = matchMedia('(prefers-color-scheme: light)');
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  $('#btnTheme').textContent = t === 'light' ? '🌙' : '☀️';
+  $('#btnTheme').title = t === 'light' ? '切换为深色主题' : '切换为浅色主题';
+}
 $('#btnTheme').onclick = () => {
-  const cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-  const next = cur === 'light' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', next);
+  const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+  applyTheme(next);
   try { localStorage.setItem('cgv-theme', next); } catch (e) { /* 隐私模式等场景忽略 */ }
-  $('#btnTheme').textContent = next === 'light' ? '🌙' : '☀️';
 };
-$('#btnTheme').textContent = document.documentElement.getAttribute('data-theme') === 'light' ? '🌙' : '☀️';
+themeMedia.addEventListener('change', (e) => {
+  let saved = null;
+  try { saved = localStorage.getItem('cgv-theme'); } catch (e2) { /* 忽略 */ }
+  if (saved === 'light' || saved === 'dark') return; // 手动选过则不跟随系统
+  applyTheme(e.matches ? 'light' : 'dark');
+});
+// 启动时同步按钮图标（主题本身已由 head 脚本设置）
+applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
 
-renderRecent();
 loadRepos();
 loadFiles();
 restoreFromHash();

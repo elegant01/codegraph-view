@@ -1,6 +1,6 @@
 {
   "name": "codegraph-view",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "CodeGraph CLI + 交互式调用关系可视化（codegraph 全部命令 + view 子命令）",
   "type": "module",
   "bin": {

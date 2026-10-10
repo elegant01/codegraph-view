@@ -4,6 +4,7 @@ backups/
 .check-*.js
 .DS_Store
 .cgv*.log
+server-preview*.log
 .atomcode/
 .claude/
 .mcp.json

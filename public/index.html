@@ -21,57 +21,25 @@
 <header>
   <div class="header-top">
     <h1><span class="brand-mark">◇</span> CodeGraph <span class="brand-sub">可视化</span></h1>
-    <div class="search-box">
-      <span class="search-icon">⌕</span>
-      <input id="q" placeholder="输入符号名、接口 URL 或文件路径…" autocomplete="off" list="recentList">
-      <datalist id="recentList"></datalist>
-      <span class="search-key">/</span>
-      <button id="btnSearch">搜索</button>
-    </div>
-    <div class="header-actions">
-      <button id="btnTheme" class="secondary" title="切换浅色/深色主题">🌙</button>
-      <button id="btnCommand" class="secondary" title="打开命令面板（Ctrl+K）">⌘K</button>
-    </div>
     <div id="crumbs"></div>
     <div id="headerInfo"></div>
   </div>
-  <div class="header-tools">
-    <div class="tool-group tool-filters">
-      <span class="tool-label">搜索筛选</span>
-      <select id="kindFilter" title="按符号类型过滤搜索结果">
-        <option value="all">全部类型</option>
-        <option value="method">方法</option>
-        <option value="function">函数</option>
-        <option value="class">类</option>
-        <option value="interface">接口</option>
-        <option value="type">类型</option>
-        <option value="property">属性</option>
-        <option value="variable">变量</option>
-      </select>
-      <label id="regexToggle" title="勾选后搜索词按正则表达式匹配（如 get.*List）"><input type="checkbox" id="chkRegex"> 正则</label>
-      <select id="graphKindFilter" title="子图过滤：只显示指定类型的节点（全部=不过滤）">
-        <option value="">节点:全部</option>
-        <option value="method">节点:方法</option>
-        <option value="function">节点:函数</option>
-        <option value="class">节点:类</option>
-        <option value="route">节点:路由</option>
-      </select>
-      <input id="nodeHighlight" placeholder="高亮节点…" autocomplete="off" title="输入关键词，图中匹配的节点保持清晰，其余降低透明度">
-    </div>
-    <div class="tool-group tool-actions">
-      <button id="btnLeftToggle" class="secondary" title="折叠/展开左侧面板">‹ <span>面板</span></button>
-      <button id="btnReset" class="secondary" title="清空历史与画布">重置</button>
-      <button id="btnUndo" class="secondary" title="撤销最近一次点击展开，回到展开前状态">↩ 撤销展开</button>
-      <button id="btnExport" class="secondary" title="导出当前图为 SVG 文件">⭳ 导出</button>
-      <button id="btnReindex" class="secondary" title="代码改动后刷新索引，让搜索/链路反映最新代码">⟳ 重新索引</button>
-      <label id="noiseToggle" title="关闭时过滤压缩混淆文件、外部依赖、基础设施等噪音节点"><input type="checkbox" id="chkNoise"> 噪音节点</label>
-    </div>
-  </div>
 </header>
-<div id="staleBar">
-  <span id="staleText">⚠ 检测到代码变更，索引可能已过期</span>
-  <button id="btnStaleReindex" class="secondary">⟳ 重新索引</button>
-  <button id="btnStaleDismiss" class="secondary">忽略</button>
+<!-- 搜索选项弹出层（⚙）：类型过滤 + 正则 -->
+<div id="searchOptsPop" class="optPop">
+  <div class="opt-row"><label for="kindFilter">类型过滤</label>
+    <select id="kindFilter">
+      <option value="all">全部类型</option>
+      <option value="method">方法</option>
+      <option value="function">函数</option>
+      <option value="class">类</option>
+      <option value="interface">接口</option>
+      <option value="type">类型</option>
+      <option value="property">属性</option>
+      <option value="variable">变量</option>
+    </select>
+  </div>
+  <div class="opt-row"><label id="regexToggle"><input type="checkbox" id="chkRegex"> 正则匹配（如 get.*List）</label></div>
 </div>
 <main>
   <div id="leftStrip" title="展开左侧面板">📁 面板</div>
@@ -90,13 +58,55 @@
   </div>
   <div id="canvasWrap">
     <svg id="svg" width="100%" height="100%"><g id="viewport"></g></svg>
+    <!-- 顶部悬浮胶囊：搜索 + 搜索选项 + 主题 + 命令面板 -->
+    <div id="topCapsule">
+      <div class="search-box">
+        <span class="search-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4.2-4.2"/></svg></span>
+        <input id="q" placeholder="输入符号名、接口 URL 或文件路径…" autocomplete="off">
+        <span class="search-key">/</span>
+        <button id="btnSearch">搜索</button>
+      </div>
+      <button id="btnSearchOpts" class="secondary" data-tip="搜索选项">⚙</button>
+      <button id="btnTheme" class="secondary" title="切换浅色/深色主题">🌙</button>
+      <button id="btnCommand" class="secondary" title="打开命令面板（Ctrl+K）">⌘K</button>
+    </div>
+    <div id="floatTools">
+      <button id="btnLeftToggle" class="ft" data-tip="折叠左侧面板">‹</button>
+      <button id="btnReset" class="ft" data-tip="重置：清空历史与画布">↺</button>
+      <button id="btnUndo" class="ft" data-tip="撤销最近一次展开（U）">↩</button>
+      <button id="btnExport" class="ft" data-tip="导出 SVG / PNG / JSON / Mermaid">⭳</button>
+      <button id="btnReindex" class="ft" data-tip="代码改动后重新索引">⟳</button>
+      <button id="btnGraphOpts" class="ft" data-tip="节点过滤 / 高亮">✦</button>
+      <label id="noiseToggle" class="ft" data-tip="噪音节点开关（压缩文件/依赖等）"><input type="checkbox" id="chkNoise">噪</label>
+    </div>
+    <!-- 图选项弹出层（✦）：节点类型过滤 + 高亮关键词 -->
+    <div id="graphOptsPop" class="optPop">
+      <div class="opt-row"><label for="graphKindFilter">节点类型</label>
+        <select id="graphKindFilter">
+          <option value="">全部</option>
+          <option value="method">方法</option>
+          <option value="function">函数</option>
+          <option value="class">类</option>
+          <option value="route">路由</option>
+        </select>
+      </div>
+      <div class="opt-row"><label for="nodeHighlight">高亮节点</label>
+        <input id="nodeHighlight" placeholder="输入关键词…" autocomplete="off">
+      </div>
+    </div>
     <canvas id="minimap" width="168" height="118" title="概览图：点击跳转视图位置"></canvas>
+    <!-- 索引过期提示：画布顶部居中的悬浮胶囊 -->
+    <div id="staleBar">
+      <span id="staleText">⚠ 检测到代码变更，索引可能已过期</span>
+      <button id="btnStaleReindex" class="secondary">⟳ 重新索引</button>
+      <button id="btnStaleDismiss" class="secondary">忽略</button>
+    </div>
     <div id="empty">
       <div class="big">开始探索代码调用关系</div>
       <div class="steps">
         <div class="step"><b>方式一：</b>在上方搜索框输入符号名（如 <b>getRoomList</b>），点击搜索结果</div>
         <div class="step"><b>方式二：</b>在左侧「文件浏览」点击文件，再点击里面的符号</div>
-        <div class="step">选中符号后画出它的调用关系图；<b>点击任意节点</b>会把它的调用关系也并入图中，逐层织成一张网</div>
+        <div class="step">选中符号后画出它的调用关系图；<b>点击右侧节点</b>向下展开它调用的，<b>点击左侧节点</b>向上展开谁调它，沿流程逐层延伸（旁路调用不会混入）</div>
       </div>
     </div>
     <div id="legend">
@@ -111,10 +121,11 @@
       <button id="btnTraceUp" class="secondary" title="以当前中心为终点，向上递归展开「谁调用了它」的全部链路">⇈ 上游链</button>
       <button id="btnPath" class="secondary" title="路径查找：依次点击两个节点，高亮它们之间的调用路径（Esc 退出）">⇢ 路径</button>
       <button id="btnHotspot" class="secondary" title="热点视图：按入度放大被频繁调用的节点">🔥 热点</button>
-      <button id="zoomIn" title="放大">＋</button>
+      <span class="gc-sep"></span>
       <button id="zoomOut" title="缩小">－</button>
+      <span id="zoomLevel" title="当前缩放比例">100%</span>
+      <button id="zoomIn" title="放大">＋</button>
       <button id="zoomReset" title="重置视图">⟲</button>
-      <span id="zoomLevel" style="font-size:12px;color:var(--text-3);align-self:center;margin-left:8px;white-space:nowrap;">100%</span>
     </div>
     <div id="exportMenu">
       <button data-fmt="svg">导出 SVG</button>
@@ -140,7 +151,7 @@
   </div>
 </main>
 <footer>
-  <span class="footer-status"><i class="status-dot"></i><b>就绪</b><span class="footer-hint">滚轮缩放 · 拖拽平移 · 点击节点展开 · 双击切换中心</span></span>
+  <span class="footer-status"><i class="status-dot"></i><b>就绪</b><span class="footer-hint">滚轮缩放 · 拖空白平移 · 拖动卡片调位置 · 点击展开 · 双击切中心</span></span>
   <div class="footer-actions">
     <button id="btnShareLink" class="secondary" title="复制当前图状态的分享链接（含中心符号/链路方向，打开即恢复）">🔗 分享</button>
     <button id="btnStack" class="secondary" title="粘贴错误堆栈并定位到源码符号">⎘ 堆栈</button>
@@ -212,7 +223,7 @@
       <h4>图怎么看</h4>
       <p><span class="dot" style="background:var(--center)"></span><b>中间金色</b> = 当前选中的符号 · <span class="dot" style="background:var(--caller)"></span><b>左侧绿色</b> = 调用者（谁调用了它） · <span class="dot" style="background:var(--callee)"></span><b>右侧蓝色</b> = 被调用者（它调用了谁） · <span class="dash"></span><b>虚线框</b> = 叶子节点，点击继续展开。</p>
       <h4>图交互</h4>
-      <p>滚轮缩放 · 拖拽空白处平移 · <b>单击节点</b> 展开它的调用关系 · <b>双击节点</b> 以它为新中心重开 · <b>单击中心</b> 右侧定位源码 · 左上角 <b>+ / − / ⟲</b> 缩放与复位 · 顶部 <b>↩ 撤销展开</b> 可逐级回退。</p>
+      <p>滚轮缩放 · 拖拽空白处平移 · <b>按住卡片拖动</b>可自由摆放位置（重新搜索/重置后恢复自动布局） · <b>单击节点</b> 沿流程方向继续展开（右侧=它调谁，左侧=谁调它，不会把旁路调用混进来） · <b>双击节点</b> 以它为新中心看双向关系 · <b>右键节点</b> 可强制选展开方向 · <b>单击中心</b> 右侧定位源码 · 底部 <b>＋ / － / ⟲</b> 缩放与复位 · 顶部 <b>↩ 撤销展开</b> 可逐级回退。悬浮节点显示代码预览，<b>鼠标可移入浮层</b>滚动/复制代码。</p>
       <h4>左侧面板</h4>
       <p><b>📁 文件浏览</b>：按文件列出符号，点文件看该文件全部符号，点符号画图。<b>🔍 搜索结果</b>：符号/接口 URL 的匹配结果，带类型标签，可直接跳转。</p>
       <h4>右侧源码</h4>
@@ -227,7 +238,7 @@
       <h4>其他功能</h4>
       <p><b>噪音节点</b>开关：关闭时隐藏 node_modules、压缩文件、外部依赖等噪音。<b>高亮搜索</b>：输入关键词，图中匹配节点保持清晰、其余变暗。<b>⭳ 导出</b>：SVG / PNG / JSON / Mermaid 四种格式。</p>
       <p><b>⇈ 上游链</b>：以当前中心为终点，向上递归展开「谁调用了它」（影响面分析）；搜索结果的 ⧉ 按钮 <b>Shift+点击</b>效果相同。<b>⇢ 路径</b>：依次点两个节点，高亮它们之间的调用路径，Esc 退出。<b>类型过滤 / 正则</b>：搜索框右侧可按符号类型过滤、用正则匹配。</p>
-      <p><b>环形虚线边</b>：橙色虚线 = 回边（调用环/回调）。<b>右上角概览图</b>：大图时显示 minimap，点击跳转。<b>链接分享</b>：当前图状态自动写入地址栏 hash，复制链接即可分享/刷新恢复。<b>索引过期</b>：检测到代码变更时顶部提示重新索引。</p>
+      <p><b>环形虚线边</b>：橙色虚线 = 回边（调用环/回调）。<b>右上角概览图</b>：大图时显示 minimap，点击跳转。<b>链接分享</b>：当前图状态自动写入地址栏 hash，复制链接即可分享/刷新恢复。<b>索引过期</b>：检测到代码变更时画布顶部浮出提示胶囊，可一键重新索引。</p>
     </div>
     <div class="modal-foot">
       <button id="helpTry" class="primary">试试示例：搜索 /api/video/audit</button>
