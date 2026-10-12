@@ -1,0 +1,33 @@
+{
+  // 类型检查专用配置：不产出任何文件，不引入构建步骤，运行时仍是原生 .mjs / .js。
+  // 目的（见 TODO.md 的 TS 迁移说明）：用类型系统拦住「调用方参数和签名对不上」这类
+  // 静默 bug —— 例如 resolveSourceCalls 漏传 root、trace 邻居节点 kind 恒为 null。
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+
+    // 渐进式：先抓「真错」（参数个数、属性名拼写、未定义变量），不追求严格空检查。
+    // 后续可逐文件开 strict，或改用 // @ts-check 分区。
+    "strict": false,
+    "noImplicitAny": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": [
+    "server.mjs",
+    "bin/**/*.mjs",
+    "lib/**/*.mjs",
+    "scripts/**/*.mjs",
+    "test/**/*.mjs",
+    "public/app.js"
+  ]
+}

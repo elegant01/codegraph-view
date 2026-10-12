@@ -38,6 +38,21 @@ test('GET /api/source 返回目标行 ±8 行片段', async () => {
   assert.equal(data.snippet.split('\n').length, data.end - data.start + 1);
 });
 
+// /api/symbols 带 60s 缓存 + 同文件并发合流：并发请求必须返回一致结果、不串数据、不挂起。
+// CI 无索引时走 500 分支，同样只要求「不挂起、状态码可预期」。
+test('GET /api/symbols 并发同文件请求结果一致', async () => {
+  const url = `${BASE}/api/symbols?file=${encodeURIComponent('lib/validate.mjs')}`;
+  const rs = await Promise.all([fetch(url), fetch(url), fetch(url)]);
+  const bodies = await Promise.all(rs.map(r => r.json()));
+  for (const r of rs) assert.ok([200, 500].includes(r.status), '实际: ' + r.status);
+  if (rs[0].status === 200) {
+    assert.equal(bodies[0].file, 'lib/validate.mjs');
+    assert.ok(Array.isArray(bodies[0].symbols));
+    assert.deepEqual(bodies[0], bodies[1]);
+    assert.deepEqual(bodies[1], bodies[2]);
+  }
+});
+
 test('GET /api/source 拒绝 ../ 目录逃逸', async () => {
   const res = await fetch(`${BASE}/api/source?file=../package.json&line=1`);
   assert.equal(res.status, 400); // safeFile 直接拒绝
@@ -103,11 +118,11 @@ test('GET /api/status 返回服务状态结构', async () => {
 });
 
 // CI 环境无 codegraph 索引时接口应报错而非挂起——验证超时兜底。
-// 首次调用可能触发 codegraph 冷启动（spawn shim / 建缓存）；runner 默认 timeout 30s，
-// codegraph 不可用时 /api/search 等满 30s 才报 500，故中止阈值放宽到 45s。
+// 首次调用可能触发 codegraph 冷启动（spawn shim / 建缓存）；/api/search 现为
+// timeout 60s + 超时重试一次，最坏 120s 才报 500，故中止阈值放宽到 150s。
 test('GET /api/search 在 codegraph 不可用时快速失败（不挂起）', async () => {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 45000);
+  const t = setTimeout(() => ctrl.abort(), 150000);
   try {
     const res = await fetch(`${BASE}/api/search?q=getList`, { signal: ctrl.signal });
     // codegraph 可用 → 200 + 数组；不可用 → 500；两者皆可，唯独不允许挂起/崩溃

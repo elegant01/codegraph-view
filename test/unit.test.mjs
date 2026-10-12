@@ -1,6 +1,9 @@
 // 纯函数单元测试：node --test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { safeArg, safeFile, clampInt, assertShellSafe } from '../lib/validate.mjs';
 import { parseJson, parseTrail, parseNodeKind, extractSource, isImportRef, fuzzyMatch, looksLikeNodeOutput } from '../lib/textparse.mjs';
 import { parseRouteFile, matchRoute, parseGoRouteFile, parseBeegoAnnotations } from '../lib/routes.mjs';
@@ -315,6 +318,28 @@ class SampleService {
   assert.ok(calls.some(c => c.cls === 'SampleRepository' && c.method === 'findById'));
   // 无文件时 className 为 null，this.xxx() 同类调用不解析
   assert.ok(!calls.some(c => c.method === 'notify'));
+});
+
+// 传了 root 时，parseSourceCalls 会读同文件解析 this.字段 的类型与同类方法调用。
+// 钉死 trace.mjs 必须把 root 一路传下来——漏传会让这几类补全静默失效。
+test('parseSourceCalls 带 root：解析 this.字段 与同类方法调用', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cgv-src-'));
+  try {
+    const src = `import { SampleRepository } from './repo';
+class SampleService {
+  protected repo = new SampleRepository();
+  async audit() {
+    await this.repo.findById(1);
+    await this.notify();
+  }
+}`;
+    writeFileSync(join(root, 'SampleService.ts'), src);
+    const calls = parseSourceCalls(src, 'SampleService.ts', root);
+    assert.ok(calls.some(c => c.cls === 'SampleRepository' && c.method === 'findById'), 'this.字段.method() 应解析出字段类型');
+    assert.ok(calls.some(c => c.cls === 'SampleService' && c.method === 'notify'), 'this.method() 同类调用应解析出本类');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('parseSourceCalls PHP：instance 链式与 $this', () => {
