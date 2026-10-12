@@ -30,11 +30,10 @@
     "forceConsistentCasingInFileNames": true
   },
   "include": [
-    "server.mjs",
-    "bin/**/*.mjs",
-    "lib/**/*.mjs",
+    "server.ts",
+    "bin/**/*.ts",
     "lib/**/*.ts",
-    "scripts/**/*.mjs",
+    "scripts/**/*.ts",
     "test/**/*.mjs",
     "public/app.js"
   ]

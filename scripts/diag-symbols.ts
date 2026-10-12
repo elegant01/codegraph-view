@@ -30,7 +30,7 @@ async function waitUp(port, tries = 50) {
 for (const p of PROJECTS) {
   if (!existsSync(p.root)) { console.log(`\n== ${p.name} 跳过（目录不存在）`); continue; }
   console.log(`\n== ${p.name} :${p.port}`);
-  const srv = spawn(process.execPath, [join(PKG, 'server.mjs'), String(p.port)], { cwd: p.root, stdio: 'ignore', windowsHide: true });
+  const srv = spawn(process.execPath, [join(PKG, 'server.ts'), String(p.port)], { cwd: p.root, stdio: 'ignore', windowsHide: true });
   try {
     if (!await waitUp(p.port)) { console.log('  服务启动失败'); continue; }
     const files = await get(p.port, '/files');

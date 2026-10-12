@@ -12,7 +12,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 let child = null;
 async function startServer() {
-  child = spawn(process.execPath, [join(PKG, 'server.mjs'), String(PORT)], { cwd: PKG, stdio: 'ignore' });
+  child = spawn(process.execPath, [join(PKG, 'server.ts'), String(PORT)], { cwd: PKG, stdio: 'ignore' });
   // 轮询等端口就绪（最多 5s）
   for (let i = 0; i < 50; i++) {
     try { await fetch(BASE + '/api/status'); return; } catch { await new Promise(r => setTimeout(r, 100)); }

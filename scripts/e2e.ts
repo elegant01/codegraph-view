@@ -71,7 +71,7 @@ async function waitUp(port, tries = 50) {
 
 async function testProject({ name, root, port }) {
   console.log(`\n== ${name} (${root}) :${port}`);
-  const srv = spawn(process.execPath, [join(PKG, 'server.mjs'), String(port)], { cwd: root, stdio: 'ignore', windowsHide: true });
+  const srv = spawn(process.execPath, [join(PKG, 'server.ts'), String(port)], { cwd: root, stdio: 'ignore', windowsHide: true });
   try {
     if (!await waitUp(port)) { check('服务启动', false); return; }
     check('服务启动', true);
@@ -124,7 +124,7 @@ async function testProject({ name, root, port }) {
     check('/trace/stream direction=up 结构', traceUp.status === 200 && traceUp.data && Array.isArray(traceUp.data.nodes) && traceUp.data.direction === 'up', JSON.stringify(traceUp.error || traceUp.data).slice(0, 120));
 
     // 安全回归：静态目录穿越应 403/404，畸形端口参数不应 500
-    const evil = await fetch(`http://127.0.0.1:${port}/../server.mjs`).then(r => r.status).catch(() => 0);
+    const evil = await fetch(`http://127.0.0.1:${port}/../server.ts`).then(r => r.status).catch(() => 0);
     check('静态穿越被拒', evil === 403 || evil === 404, `got ${evil}`);
     const badDepth = await getTraceStream(port, `symbol=${encodeURIComponent(sym.name)}&file=${encodeURIComponent(fileWithSymbols.path)}&depth=-5&maxNodes=abc`);
     check('非法 depth/maxNodes 容错', badDepth.status === 200 && badDepth.data && Array.isArray(badDepth.data.nodes));

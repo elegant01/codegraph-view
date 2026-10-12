@@ -31,7 +31,7 @@ cgv               # 查看帮助
 **方式二：仓库内直接跑（开发用）**
 
 ```bash
-node scripts/codegraph-viz/server.mjs [端口]   # 默认 39267，退回用 PATH 里的 codegraph
+node server.ts [端口]   # 默认 39267，退回用 PATH 里的 codegraph（需 Node ≥22.18）
 ```
 
 ---
@@ -236,8 +236,8 @@ cd /path/to/go-service && cgv view 4000   # Go
 
 ## 架构
 
-- `bin/cgv.mjs`：命令分发器 —— `view` 启动可视化服务，其余参数原样转发给包内依赖的 codegraph
-- `server.mjs`：node:http 静态服务 + API 层（缓存、gzip、SSE、并发限流、reindex 互斥、索引过期 watch）
+- `bin/cgv.ts`：命令分发器 —— `view` 启动可视化服务，其余参数原样转发给包内依赖的 codegraph
+- `server.ts`：node:http 静态服务 + API 层（缓存、gzip、SSE、并发限流、reindex 互斥、索引过期 watch）
 - `lib/*.ts`：可测试的纯逻辑模块（**真 TypeScript，但零构建**，见下）—— `validate`（输入校验/shell 安全）· `proc`（子进程执行器）· `textparse`（CLI 输出契约层）· `routes`（Laravel 路由解析）· `urlmap`（自定义框架 URL 定位）· `sourcecalls`（源码级动态调用补全）· `trace`（全链路 BFS，双向可取消）
 - `public/index.html`：单页前端，纯 SVG 画图，无任何框架/依赖
 
@@ -263,24 +263,29 @@ npm run typecheck # TypeScript 类型检查（checkJs，零构建，仅检查不
 npm run e2e       # 端到端冒烟（对存在的 fixture 项目起服务验证 API）
 ```
 
-> 类型检查说明：项目**不需要构建**。`server.mjs` 与 `lib/*.mjs` 由 `checkJs` 直接检查，
+> 类型检查说明：项目**不需要构建**。后端（`server.ts` / `bin/*.ts` / `lib/*.ts` / `scripts/*.ts`）
+> 是真 TypeScript，前端 `public/app.js` 与测试 `test/*.test.mjs` 由 `checkJs` 覆盖；
 > 工具链只做静态分析、不产出任何文件。DOM 相关的类型断言集中在少数几处。
 > 迁移进度与路线见 `TODO.md` 第十节。
 
-### 为什么 `lib/` 里是 `.ts`？
+### 为什么后端是 `.ts`？
 
-`lib/` 全部是**真 TypeScript，但不经过任何构建**——Node（≥22.18）原生剥离类型后直接执行，
-`server.mjs` 里照常 `import './lib/trace.ts'`。得到的是类型本身的价值：契约类型定义在
-`lib/textparse.ts`（`SymbolNode` / `TrailEntry` / `Payload` 等「codegraph CLI 输出 → 内部结构」
-的唯一转换点），`Runner` / `RouteEntry` / `SymbolResolver` / `TraceResult` 等接口让
-`server.mjs` 与各模块之间、以及 `.mjs` 消费者都能被 `checkJs` 校验到字段名与形状。
+`server.ts` / `lib/*.ts` / `bin/*.ts` 都是**真 TypeScript，但不经过任何构建**——Node（≥22.18）
+原生剥离类型后直接执行，`server.ts` 里照常 `import './lib/trace.ts'`。得到的是类型本身的价值：
+契约类型定义在 `lib/textparse.ts`（`SymbolNode` / `TrailEntry` 等「codegraph CLI 输出 → 内部结构」
+的唯一转换点），而 `Runner` / `RouteEntry` / `SymbolResolver` / `TraceResult` / `TraceContext`
+等接口让各模块之间、以及 `server.ts` 里的 handler 与缓存都能被校验到字段名与形状
+（`server.ts` 还定义了 `GraphPayload` / `SymbolsPayload` 等 API 出参契约）。
+
+测试文件保持 `.test.mjs`：`node --test` 的自动发现只认 `*.test.?(c|m)js`，改成 `.ts`
+有「测试被静默跳过」的风险；它们照样由 `checkJs` 检查，也能直接 `import` `.ts` 模块。
 
 为此有两条硬约束：
 
 - 语法必须**可擦除**（不能用 `enum` / `namespace` / 构造函数参数属性），由 tsconfig 的
   `erasableSyntaxOnly` 强制；
 - 因此 **`cgv view` 要求 Node ≥ 22.18**（`cgv <其他命令>` 只转发给 codegraph，不受影响）。
-  `bin/cgv.mjs` 会在版本不足时给出明确提示，而不是抛 `ERR_UNKNOWN_FILE_EXTENSION`。
+  `bin/cgv.ts` 会在版本不足时给出明确提示，而不是抛 `ERR_UNKNOWN_FILE_EXTENSION`。
 
 选这条路而不是 `tsc` 编译到 `dist/`，是为了保住项目从第一天起就有的「改完直接
-`node server.mjs` 就能跑」——真 `.ts` 与零构建并不冲突。
+`node server.ts` 就能跑」——真 `.ts` 与零构建并不冲突。

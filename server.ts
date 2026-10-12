@@ -2,6 +2,7 @@
 // 用法: node server.mjs [端口] [--host 0.0.0.0]  →  打开 http://localhost:39267
 // 默认仅监听 127.0.0.1（本机工具，防局域网访问源码）；需要共享时显式 --host 或 HOST 环境变量
 import { createServer } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFile, stat as fsStat, readdir } from 'node:fs/promises';
 import { watch, readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -15,14 +16,43 @@ import { createRouteParser, matchRoute } from './lib/routes.ts';
 import { createUrlMapper } from './lib/urlmap.ts';
 import { createSymbolResolver } from './lib/sourcecalls.ts';
 import { traceChain } from './lib/trace.ts';
+import type { SymbolNode } from './lib/textparse.ts';
+import type { TraceResult } from './lib/trace.ts';
+
+// ===== 接口契约类型（API 出参与内部结构；handler 签名也靠它们对齐）=====
+/** API 路由处理函数；`handler: null` 表示「已登记但仍在下方兼容分支里处理」 */
+type ApiHandler = (req: IncomingMessage, res: ServerResponse, url: URL) => unknown;
+interface RouteDef { method: string; path: string; handler: ApiHandler | null }
+/** 带时间戳的缓存项 */
+interface CacheEntry<T> { at: number; data: T }
+/** `/api/graph` 的响应 */
+interface GraphPayload {
+  symbol: string;
+  kind: string | null;
+  line: number | null;
+  callers: SymbolNode[];
+  callees: SymbolNode[];
+  source: string;
+}
+/** `/api/symbols` 的响应 */
+interface SymbolsPayload {
+  file: string;
+  symbols: Array<{ name: string; kind: string; line: number }>;
+  total: number;
+  truncated: boolean;
+}
+/** 聚合根下发现的嵌套 git 仓库 */
+interface RepoInfo { name: string; path: string }
+/** `/api/files` 的一项：文件路径 + 该文件被索引到的符号数 */
+interface FileInfo { path: string; nodeCount: number }
 
 const ROOT = process.cwd(); // 项目根目录（codegraph 索引所在）
 const ROOT_NAME = ROOT.split(/[\\/]/).filter(Boolean).pop() || 'root';
 const PKG = fileURLToPath(new URL('.', import.meta.url));
 
 // 发现聚合根目录下的嵌套 Git 仓库；只返回相对路径，供前端给节点打仓库标签
-let repoCache = null;
-async function discoverRepos() {
+let repoCache: RepoInfo[] | null = null;
+async function discoverRepos(): Promise<RepoInfo[]> {
   if (repoCache) return repoCache;
   const found = [{ name: ROOT_NAME, path: '' }];
   const ignored = new Set(['.git', '.codegraph', 'node_modules', 'vendor', 'dist', 'build', 'out', '.next', '.nuxt', '.idea', '.vscode', 'coverage']);
@@ -65,7 +95,7 @@ const urlMapper = createUrlMapper({ root: ROOT });
 const symbolResolver = createSymbolResolver({ run, root: ROOT });
 
 // gin 包级处理器（如 controllers.Add）：按名查询，取第一个 function/method 符号
-async function resolveBareFunc(name) {
+async function resolveBareFunc(name: string): Promise<SymbolNode | null> {
   if (!name || !/^[\w]+$/.test(name)) return null;
   const out = await run(['query', name, '--json', '-l', '10']);
   const list = parseJson(out, []);
@@ -74,17 +104,17 @@ async function resolveBareFunc(name) {
   return hit ? { name: hit.node.name, filePath: hit.node.filePath, startLine: hit.node.startLine, kind: hit.node.kind } : null;
 }
 
-const normPath = (p) => String(p || '').replace(/\\/g, '/');
+const normPath = (p: unknown): string => String(p || '').replace(/\\/g, '/');
 
 // 从 `codegraph node` 输出提取 Location 行号（Trail 文本不含 kind，但 Location 带行号）
-function parseNodeLine(raw) {
+function parseNodeLine(raw: unknown): number | null {
   const m = String(raw).match(/\*\*Location:\*\*\s*\S*?:(\d+)/);
   return m ? Number(m[1]) : null;
 }
 
 // callers/callees --json 的结果带 kind（Trail 文本不带）。按 (filePath, name) 建索引回填，
 // 让节点卡片显示正确类型，并让前端的 interface/type 噪音过滤生效。
-function kindLookupFrom(...raws) {
+function kindLookupFrom(...raws: unknown[]): Map<string, string> {
   const map = new Map();
   for (const raw of raws) {
     const parsed = parseJson(raw, null);
@@ -102,20 +132,18 @@ function kindLookupFrom(...raws) {
 
 // 等 promise 最多 ms 毫秒；超时返回 null，但底层查询继续跑完并自己写缓存（不取消）。
 // 用于「可选增强」：拿得到就带上，拿不到也不能拖慢或污染主结果。
-function withDeadline(promise, ms) {
-  return Promise.race([
-    promise,
-    new Promise((resolve) => {
-      const t = setTimeout(() => resolve(null), ms);
-      if (t && typeof t.unref === 'function') t.unref(); // 别让这个计时器吊住进程
-    }),
-  ]);
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  const timeout = new Promise<null>((resolve) => {
+    const t = setTimeout(() => resolve(null), ms);
+    if (t && typeof t.unref === 'function') t.unref(); // 别让这个计时器吊住进程
+  });
+  return Promise.race<T | null>([promise, timeout]);
 }
 
 // 查一次邻居 kind（两次 --json 并发，自带并发合流）。
 // 只有「真的查到了」（至少一侧返回了合法 JSON）才写缓存；查失败/超时记一次冷却，
 // 冷却期内不再重试——否则每次 graph 请求都要白等一个 KIND_WAIT_MS。
-function primeKinds(sym) {
+function primeKinds(sym: string): Promise<Map<string, string>> {
   const running = kindInflight.get(sym);
   if (running) return running;
   const p = (async () => {
@@ -144,14 +172,14 @@ function primeKinds(sym) {
 // （本次不带 kind，查询在后台跑完写缓存，下次请求即命中）。
 const KIND_WAIT_MS = 1500;
 const KIND_RETRY_MS = 30000; // 查询失败后的冷却，避免每次请求都白等
-async function kindsFor(sym) {
+async function kindsFor(sym: string): Promise<Map<string, string> | null> {
   const hit = cacheGet(kindCache, sym, TTL_KINDS * staleFactor());
   if (hit) return hit;
   if (Date.now() - (kindFailedAt.get(sym) || 0) < KIND_RETRY_MS) return null;
   return withDeadline(primeKinds(sym), KIND_WAIT_MS);
 }
 
-const MIME = {
+const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
@@ -159,9 +187,9 @@ const MIME = {
 };
 
 // JSON 响应：>1KB 且客户端支持时 gzip；统一加 nosniff
-function json(req, res, code, obj) {
+function json(req: IncomingMessage, res: ServerResponse, code: number, obj: unknown): void {
   let body = Buffer.from(JSON.stringify(obj));
-  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'X-Content-Type-Options': 'nosniff' };
+  const headers: Record<string, string | number> = { 'Content-Type': 'application/json; charset=utf-8', 'X-Content-Type-Options': 'nosniff' };
   const ae = String(req.headers['accept-encoding'] || '');
   if (body.length > 1024 && /\bgzip\b/.test(ae)) {
     body = gzipSync(body);
@@ -175,32 +203,33 @@ function json(req, res, code, obj) {
 // ===== 短 TTL 缓存（搜索结果 / 文件列表），reindex 时失效 =====
 // 索引过期（stale）时 TTL 减半：改码后旧结果更快让位，同时避免完全禁缓存打爆 CLI
 const TTL_SEARCH = 20000, TTL_FILES = 30000, TTL_GRAPH = 30000, TTL_TRACE = 60000, TTL_KINDS = 60000;
-const staleFactor = () => (indexStale ? 0.5 : 1);
-const searchCache = new Map(); // key -> { at, data }
-const graphCache = new Map();  // symbol|file -> { at, data }（点节点/展开都走它）
-const traceCache = new Map();  // symbol|file|depth|maxNodes|direction -> { at, data }
+const staleFactor = (): number => (indexStale ? 0.5 : 1);
+const searchCache = new Map<string, CacheEntry<SymbolNode[]>>(); // key -> { at, data }
+const graphCache = new Map<string, CacheEntry<GraphPayload>>();  // symbol|file -> { at, data }（点节点/展开都走它）
+const traceCache = new Map<string, CacheEntry<TraceResult>>();   // symbol|file|depth|maxNodes|direction -> { at, data }
 // 邻居 kind 单独缓存：它来自一次可失败/可超时的 --json 查询，不能和 graph 主结果
 // （node -f 的 Trail，稳定且快）混在同一个缓存里，否则冷启动那次拿不到 kind 的结果
 // 会把「无 kind」冻结一整个 TTL。key 是 symbol，value 是 Map<'file::name', kind>。
-const kindCache = new Map();     // symbol -> { at, map }
-const kindInflight = new Map();  // symbol -> Promise<Map>（并发合流）
-const kindFailedAt = new Map();  // symbol -> 上次查询失败时间（冷却期内不再重试）
-const filesCache = { at: 0, data: null };
-function cacheGet(map, key, ttl) {
+const kindCache = new Map<string, CacheEntry<Map<string, string>>>(); // symbol -> { at, map }
+const kindInflight = new Map<string, Promise<Map<string, string>>>(); // symbol -> Promise<Map>（并发合流）
+const kindFailedAt = new Map<string, number>(); // symbol -> 上次查询失败时间（冷却期内不再重试）
+const filesCache: { at: number; data: FileInfo[] | null } = { at: 0, data: null };
+
+function cacheGet<T>(map: Map<string, CacheEntry<T>>, key: string, ttl: number): T | null {
   const e = map.get(key);
   if (e && Date.now() - e.at < ttl) { map.delete(key); map.set(key, e); return e.data; }
   return null;
 }
-function cacheSet(map, key, data, cap = 100) {
-  if (map.size >= cap) map.delete(map.keys().next().value);
+function cacheSet<T>(map: Map<string, CacheEntry<T>>, key: string, data: T, cap = 100): void {
+  if (map.size >= cap) map.delete(map.keys().next().value as string);
   map.set(key, { at: Date.now(), data });
 }
 // 文件符号列表：`node -f <file> --symbols-only` 实测大文件要几十秒（nextjs-app 单文件 28s），
 // 必须缓存；同文件并发请求合流，避免双击/多入口同时触发重复跑 CLI。
 const TTL_SYMBOLS = 60000;
-const symbolsCache = new Map();    // file -> { at, data }
-const symbolsInflight = new Map(); // file -> Promise<data>
-function loadSymbols(file) {
+const symbolsCache = new Map<string, CacheEntry<SymbolsPayload>>();    // file -> { at, data }
+const symbolsInflight = new Map<string, Promise<SymbolsPayload>>();     // file -> Promise<data>
+function loadSymbols(file: string): Promise<SymbolsPayload> {
   const hit = cacheGet(symbolsCache, file, TTL_SYMBOLS * staleFactor());
   if (hit) return Promise.resolve(hit);
   const running = symbolsInflight.get(file);
@@ -208,13 +237,13 @@ function loadSymbols(file) {
   const p = (async () => {
     try {
       const out = await run(['node', '-f', file, '--symbols-only']);
-      const symbols = [];
+      const symbols: SymbolsPayload['symbols'] = [];
       for (const m of out.matchAll(/^- `([^`]+)` \(([^)]+)\)(?:.*?) — :(\d+)$/gm)) {
         symbols.push({ name: m[1], kind: m[2], line: Number(m[3]) });
       }
       // codegraph 符号表硬上限 200，超出时输出 `- … +N more`；透出给前端提示
       const more = out.match(/^- … \+(\d+) more$/m);
-      const data = { file, symbols, total: more ? symbols.length + Number(more[1]) : symbols.length, truncated: !!more };
+      const data: SymbolsPayload = { file, symbols, total: more ? symbols.length + Number(more[1]) : symbols.length, truncated: !!more };
       cacheSet(symbolsCache, file, data, 300);
       return data;
     } finally {
@@ -225,7 +254,7 @@ function loadSymbols(file) {
   return p;
 }
 
-function invalidateAll() {
+function invalidateAll(): void {
   searchCache.clear();
   graphCache.clear();
   traceCache.clear();
@@ -249,7 +278,7 @@ const fileHashes = new Map(); // 相对路径 -> sha1
 let hashBaselineReady = false;
 const IGNORE_WATCH = /(^|[\\/])(\.git|\.codegraph|node_modules|vendor|dist|build|out|\.next|\.nuxt|\.idea|\.vscode|coverage|logs?|tmp|temp)([\\/]|$)/;
 const SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|go|php|py|java|rs|vue|svelte)$/;
-function hashFileContent(abs) {
+function hashFileContent(abs: string): string | null {
   try { return createHash('sha1').update(readFileSync(abs)).digest('hex'); } catch { return null; }
 }
 // 异步遍历建基线（不阻塞服务启动；大项目几秒级）
@@ -295,7 +324,7 @@ try {
 
 // 轻量路由表：稳定的独立接口在这里声明，复杂业务 handler 可继续渐进迁移。
 // 每个条目只负责匹配和响应，主请求函数不再堆叠这些基础分支。
-const routeTable = [
+const routeTable: RouteDef[] = [
   // 业务 API 目录：handler 为空的条目由兼容分支处理，便于后续逐个抽取而不改变响应行为。
   // 新增接口必须先登记到这里，避免路由散落且无法盘点。
   ...[
@@ -319,7 +348,7 @@ const routeTable = [
     }),
   },
 ];
-function findRoute(method, path) {
+function findRoute(method: string, path: string): RouteDef | null {
   return routeTable.find(route => route.method === method && route.path === path) || null;
 }
 
@@ -615,7 +644,7 @@ const server = createServer(async (req, res) => {
     json(req, res, 500, { error: String((e && e.message) || e) });
   }
 });
-server.on('error', (/** @type {NodeJS.ErrnoException} */ e) => {
+server.on('error', (e: NodeJS.ErrnoException) => {
   if (e && e.code === 'EADDRINUSE') {
     console.log(`[错误] 端口 ${PORT} 已被占用，换个端口重试，例如: cgv view ${PORT + 1}`);
   } else {

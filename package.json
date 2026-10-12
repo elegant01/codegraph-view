@@ -4,13 +4,13 @@
   "description": "CodeGraph CLI + 交互式调用关系可视化（codegraph 全部命令 + view 子命令）",
   "type": "module",
   "bin": {
-    "cgv": "bin/cgv.mjs",
-    "codegraph-view": "bin/cgv.mjs"
+    "cgv": "bin/cgv.ts",
+    "codegraph-view": "bin/cgv.ts"
   },
   "scripts": {
     "test": "node --test",
     "typecheck": "tsc --noEmit",
-    "e2e": "node scripts/e2e.mjs"
+    "e2e": "node scripts/e2e.ts"
   },
   "keywords": [
     "codegraph",
@@ -25,7 +25,7 @@
   "files": [
     "bin",
     "lib",
-    "server.mjs",
+    "server.ts",
     "public",
     "README.md"
   ],

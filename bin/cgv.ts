@@ -25,7 +25,7 @@ if (args[0] === 'view') {
       + 'lib/ 下的 .ts 依赖 Node 原生类型剥离，项目刻意不做构建。请升级 Node 后重试。');
     process.exit(1);
   }
-  run(process.execPath, [join(ROOT, 'server.mjs'), ...args.slice(1)]);
+  run(process.execPath, [join(ROOT, 'server.ts'), ...args.slice(1)]);
 } else if (args.length === 0 || args[0] === '-h' || args[0] === '--help') {
   console.log(`用法: cgv <命令> [参数]
 
