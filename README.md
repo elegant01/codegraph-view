@@ -53,6 +53,8 @@ node scripts/codegraph-viz/server.mjs [端口]   # 默认 39267，退回用 PATH
 - 按每个文件里被索引到的**符号总数**倒序排列（函数/类/方法/类型都算）
 - 每行前面的数字 = 该文件的符号数量
 - 顶部过滤框可按路径关键词筛选
+- 列表每页 200 个，底部「显示更多」增量加载，不再硬切上限
+- 默认隐藏噪音文件（`.min.js`、`node_modules`/`vendor`/`dist` 等），与画布右上角的「噪」开关共用同一套规则
 - **点文件** → 列出该文件里的所有符号；**点符号** → 画出调用关系图
 - 单文件符号列表受 codegraph 上限影响最多显示前 200 个，超出时列表底部提示「共 N 个」，其余用顶部搜索直达
 - 左侧面板可像右侧源码一样**折叠/展开**（顶部「‹ / ›」按钮，或折叠后点击左侧竖条）
@@ -240,10 +242,10 @@ cd /path/to/go-service && cgv view 4000   # Go
 
 API：
 - `GET /api/search?q=&kind=&regex=` → 符号搜索（类型过滤 / 正则）
-- `GET /api/graph?symbol=&file=` → 某符号的 callers + callees + 源码
-- `GET /api/trace/stream?symbol=&file=&depth=&maxNodes=&direction=` → 递归展开调用链的 SSE 流式接口；发送 `progress` 事件报告进度，发送 `result` 事件返回 `{ nodes, edges, direction }`，客户端断开即自动取消
-- `GET /api/status` → 索引过期提示 / 运行信息
-- `GET /api/symbols?file=` → 某文件内的符号列表
+- `GET /api/graph?symbol=&file=` → 某符号的 callers + callees + 源码（30s 缓存，键 = symbol+file）
+- `GET /api/trace/stream?symbol=&file=&depth=&maxNodes=&direction=` → 递归展开调用链的 SSE 流式接口；发送 `progress` 事件报告进度，发送 `result` 事件返回 `{ nodes, edges, direction }`，客户端断开即自动取消；同一组参数 60s 内重复展开直接回放结果（取消产生的部分结果不缓存）
+- `GET /api/status` → 索引过期提示 / 运行信息（含 `root` 项目根绝对路径，前端据此把相对文件路径补成绝对路径，供「在编辑器打开」使用）
+- `GET /api/symbols?file=` → 某文件内的符号列表（60s 缓存 + 同文件并发合流；该接口单次要跑一次 codegraph，大文件可达数十秒）
 - `GET /api/files` → 全部文件（含符号数）
 
 安全：
@@ -253,8 +255,14 @@ API：
 - 静态目录用 `path.relative` 判定，防前缀绕过
 - reindex single-flight + 冷却，防并发写坏索引
 
-测试：
+测试与类型检查：
 ```bash
-npm test         # 单元测试（lib 纯函数 + CLI 输出契约）
-npm run e2e      # 端到端冒烟（对存在的 fixture 项目起服务验证 API）
+npm test          # 单元测试（lib 纯函数 + CLI 输出契约）+ 服务端集成测试 + 前端测试（node:vm）
+npm run typecheck # TypeScript 类型检查（checkJs，零构建，仅检查不产出）
+npm run e2e       # 端到端冒烟（对存在的 fixture 项目起服务验证 API）
 ```
+
+> 类型检查说明：项目**不需要构建**，运行时仍是原生 `.mjs` / `.js`。
+> `tsconfig.json` 只开 `allowJs + checkJs + noEmit`，用于拦住「调用方参数与函数签名对不上」
+> 这类运行期才暴露的静默 bug（例如 trace 漏传 root）。DOM 相关的类型断言集中在少数几处。
+> 迁到真 `.ts` 的路线见 `TODO.md` 第十节。
