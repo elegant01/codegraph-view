@@ -274,7 +274,8 @@ let reindexState = { running: false, lastAt: 0 };
 // Windows/网络盘上 fs.watch 会对「仅元数据变化」（atime/属性位/杀软扫描/同步工具）报 change，
 // mtime 也不可靠（实测存在 mtime 比当前时间还晚的脏数据）。改用内容哈希甄别：
 // 启动后异步为源码文件建 sha1 基线，watch 事件只有内容哈希真变了才提示过期。
-const fileHashes = new Map(); // 相对路径 -> sha1
+/** @type {Map<string, string>} 相对路径（统一 / 分隔）-> sha1 */
+const fileHashes = new Map();
 let hashBaselineReady = false;
 const IGNORE_WATCH = /(^|[\\/])(\.git|\.codegraph|node_modules|vendor|dist|build|out|\.next|\.nuxt|\.idea|\.vscode|coverage|logs?|tmp|temp)([\\/]|$)/;
 const SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|go|php|py|java|rs|vue|svelte)$/;
@@ -483,6 +484,7 @@ const server = createServer(async (req, res) => {
       const file = safeFile((url.searchParams.get('file') || '').trim());
       const short = sym.split(/::|\\/).pop() || sym;
       const queries = [...new Set([sym, short])];
+      /** @type {Map<string, SymbolNode>} */
       const found = new Map();
       for (const q of queries) {
         try {

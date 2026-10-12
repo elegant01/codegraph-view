@@ -1303,6 +1303,7 @@ window.addEventListener('blur', hideCtx);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtx(); });
 
 // ===== 路径查找：依次点两个节点，BFS 有向最短路径并高亮（Esc/再点按钮退出） =====
+/** @type {{ nodes: Set<string>, edges: Set<string> }} 路径查找高亮的节点/边集合 */
 const pathHL = { nodes: new Set(), edges: new Set() };
 let pathMode = false;
 let hotspotMode = false;
