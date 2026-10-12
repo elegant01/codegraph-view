@@ -237,7 +237,7 @@ cd /path/to/go-service && cgv view 4000   # Go
 ## 架构
 
 - `bin/cgv.ts`：命令分发器 —— `view` 启动可视化服务，其余参数原样转发给包内依赖的 codegraph
-- `server.ts`：node:http 静态服务 + API 层（缓存、gzip、SSE、并发限流、reindex 互斥、索引过期 watch）
+- `server.ts`：node:http 静态服务 + API 层（缓存、gzip、SSE、并发限流、reindex 互斥、索引过期 watch；哈希基线异步分批建，不阻塞事件循环）
 - `lib/*.ts`：可测试的纯逻辑模块（**真 TypeScript，但零构建**，见下）—— `validate`（输入校验/shell 安全）· `proc`（子进程执行器）· `textparse`（CLI 输出契约层）· `routes`（Laravel 路由解析）· `urlmap`（自定义框架 URL 定位）· `sourcecalls`（源码级动态调用补全）· `trace`（全链路 BFS，双向可取消）
 - `public/index.html`：单页前端，纯 SVG 画图，无任何框架/依赖
 

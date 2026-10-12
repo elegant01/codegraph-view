@@ -4,7 +4,7 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFile, stat as fsStat, readdir } from 'node:fs/promises';
-import { watch, readFileSync, readdirSync } from 'node:fs';
+import { watch, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -278,47 +278,64 @@ const fileHashes = new Map(); // 相对路径 -> sha1
 let hashBaselineReady = false;
 const IGNORE_WATCH = /(^|[\\/])(\.git|\.codegraph|node_modules|vendor|dist|build|out|\.next|\.nuxt|\.idea|\.vscode|coverage|logs?|tmp|temp)([\\/]|$)/;
 const SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|go|php|py|java|rs|vue|svelte)$/;
+/** 同步算内容哈希：仅供 watch 回调用（一次只处理一个变更文件，代价可忽略） */
 function hashFileContent(abs: string): string | null {
   try { return createHash('sha1').update(readFileSync(abs)).digest('hex'); } catch { return null; }
 }
-// 异步遍历建基线（不阻塞服务启动；大项目几秒级）
-setImmediate(() => {
+/** 把 watch 给的文件名归一成与基线一致的相对路径（Windows 给的是 \ 分隔） */
+function relOf(filename: string): string { return filename.replace(/\\/g, '/'); }
+
+// 异步分批建基线。实测 nextjs-app（8630 个源码文件）用同步遍历会把事件循环卡住 20–70 秒：
+// 期间到达的请求只能干等，还会和它抢磁盘 I/O（曾观察到启动后首个 /api/graph 因此瞬时 500）。
+// 改成 fs/promises + 有限并发、逐批让出事件循环，启动过程不再卡住服务。
+const HASH_CONCURRENCY = 8;
+async function hashFileAsync(rel: string): Promise<string | null> {
+  try { return createHash('sha1').update(await readFile(join(ROOT, rel))).digest('hex'); } catch { return null; }
+}
+async function buildHashBaseline(): Promise<void> {
   const t0 = Date.now();
-  const stack = [''];
-  while (stack.length) {
-    const dir = stack.pop();
+  const dirs = [''];
+  const files: string[] = [];
+  // 第一遍：只遍历目录结构（readdir 本身很快），收集待哈希的源码文件
+  for (let dir = dirs.pop(); dir !== undefined; dir = dirs.pop()) {
     let entries;
-    try { entries = readdirSync(join(ROOT, dir || '.'), { withFileTypes: true }); } catch { continue; }
+    try { entries = await readdir(join(ROOT, dir || '.'), { withFileTypes: true }); } catch { continue; }
     for (const e of entries) {
-      const rel = dir ? dir + '\\' + e.name : e.name;
-      if (e.isDirectory()) { if (!IGNORE_WATCH.test(rel + '\\')) stack.push(rel); continue; }
-      if (!SOURCE_EXT.test(e.name)) continue;
-      const h = hashFileContent(join(ROOT, rel));
-      if (h) fileHashes.set(rel, h);
+      const rel = dir ? dir + '/' + e.name : e.name; // key 统一 / 分隔，跨平台与 watch 回调一致
+      if (e.isDirectory()) { if (!IGNORE_WATCH.test(rel + '/')) dirs.push(rel); continue; }
+      if (SOURCE_EXT.test(e.name)) files.push(rel);
     }
   }
+  // 第二遍：分批并发读文件算哈希，每批之间天然让出事件循环
+  for (let i = 0; i < files.length; i += HASH_CONCURRENCY) {
+    const batch = files.slice(i, i + HASH_CONCURRENCY);
+    const hashed = await Promise.all(batch.map(async (rel) => [rel, await hashFileAsync(rel)] as const));
+    for (const [rel, h] of hashed) if (h) fileHashes.set(rel, h);
+  }
   hashBaselineReady = true;
-  console.log(`[watch] 哈希基线就绪：${fileHashes.size} 个源码文件，耗时 ${Date.now() - t0}ms`);});
+  console.log(`[watch] 哈希基线就绪：${fileHashes.size} 个源码文件，耗时 ${Date.now() - t0}ms`);
+}
+setImmediate(() => { void buildHashBaseline(); });
 try {
   let debounce: ReturnType<typeof setTimeout> | undefined;
   watch(ROOT, { recursive: true }, (event, filename) => {
     if (!filename || indexStale || reindexState.running) return;
+    const rel = relOf(filename); // 与基线 key 一致（统一 / 分隔）
     // 只有源码文件变更才提示过期——日志/缓存/IDE 文件变更不该惊动用户
-    if (IGNORE_WATCH.test(filename) || !SOURCE_EXT.test(filename)) return;
-    const abs = join(ROOT, filename);
-    const h = hashFileContent(abs);
-    const base = fileHashes.get(filename);
+    if (IGNORE_WATCH.test(rel) || !SOURCE_EXT.test(rel)) return;
+    const h = hashFileContent(join(ROOT, rel));
+    const base = fileHashes.get(rel);
     if (base === undefined) {
       // 基线未就绪时的早期事件只记录不告警；就绪后出现的未知文件 = 新建源码文件，算真实变更
-      if (h) fileHashes.set(filename, h);
+      if (h) fileHashes.set(rel, h);
       if (!hashBaselineReady || h === null) return;
     } else if (h === base) {
       return; // 内容未变（仅元数据/mtime 变化），忽略
     } else {
-      fileHashes.set(filename, h); // 内容真变了：更新基线
+      fileHashes.set(rel, h); // 内容真变了：更新基线
     }
     clearTimeout(debounce);
-    debounce = setTimeout(() => { indexStale = true; staleFile = filename; }, 500);
+    debounce = setTimeout(() => { indexStale = true; staleFile = rel; }, 500);
   });
 } catch { /* 平台不支持 recursive watch 时静默降级（仅无过期提示） */ }
 
