@@ -8,13 +8,13 @@ import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { join, extname, normalize, relative, isAbsolute } from 'node:path';
-import { safeArg, safeFile, clampInt } from './lib/validate.mjs';
-import { createRunner } from './lib/proc.mjs';
+import { safeArg, safeFile, clampInt } from './lib/validate.ts';
+import { createRunner } from './lib/proc.ts';
 import { parseJson, parseTrail, parseNodeKind, isImportRef, fuzzyMatch } from './lib/textparse.ts';
-import { createRouteParser, matchRoute } from './lib/routes.mjs';
-import { createUrlMapper } from './lib/urlmap.mjs';
-import { createSymbolResolver } from './lib/sourcecalls.mjs';
-import { traceChain } from './lib/trace.mjs';
+import { createRouteParser, matchRoute } from './lib/routes.ts';
+import { createUrlMapper } from './lib/urlmap.ts';
+import { createSymbolResolver } from './lib/sourcecalls.ts';
+import { traceChain } from './lib/trace.ts';
 
 const ROOT = process.cwd(); // 项目根目录（codegraph 索引所在）
 const ROOT_NAME = ROOT.split(/[\\/]/).filter(Boolean).pop() || 'root';

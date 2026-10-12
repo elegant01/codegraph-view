@@ -238,7 +238,7 @@ cd /path/to/go-service && cgv view 4000   # Go
 
 - `bin/cgv.mjs`：命令分发器 —— `view` 启动可视化服务，其余参数原样转发给包内依赖的 codegraph
 - `server.mjs`：node:http 静态服务 + API 层（缓存、gzip、SSE、并发限流、reindex 互斥、索引过期 watch）
-- `lib/`：可测试的纯逻辑模块 —— `validate`（输入校验/shell 安全）· `proc`（子进程执行器）· `textparse.ts`（CLI 输出契约层，见下）· `routes`（Laravel 路由解析）· `urlmap`（自定义框架 URL 定位）· `sourcecalls`（源码级动态调用补全）· `trace`（全链路 BFS，双向可取消）
+- `lib/*.ts`：可测试的纯逻辑模块（**真 TypeScript，但零构建**，见下）—— `validate`（输入校验/shell 安全）· `proc`（子进程执行器）· `textparse`（CLI 输出契约层）· `routes`（Laravel 路由解析）· `urlmap`（自定义框架 URL 定位）· `sourcecalls`（源码级动态调用补全）· `trace`（全链路 BFS，双向可取消）
 - `public/index.html`：单页前端，纯 SVG 画图，无任何框架/依赖
 
 API：
@@ -267,12 +267,15 @@ npm run e2e       # 端到端冒烟（对存在的 fixture 项目起服务验证
 > 工具链只做静态分析、不产出任何文件。DOM 相关的类型断言集中在少数几处。
 > 迁移进度与路线见 `TODO.md` 第十节。
 
-### 为什么 `lib/` 里有 `.ts` 文件？
+### 为什么 `lib/` 里是 `.ts`？
 
-`lib/textparse.ts` 是「codegraph CLI 输出 → 内部结构」的**唯一契约点**：`SymbolNode` /
-`TrailEntry` / `QueryPayload` 这些 interface 定义在这里，下游 `.mjs` 就能被 `checkJs` 校验到
-字段名与形状。它**不经过任何构建**——Node（≥22.18）原生剥离类型后直接执行，`.mjs` 里照常
-`import './textparse.ts'`。为此：
+`lib/` 全部是**真 TypeScript，但不经过任何构建**——Node（≥22.18）原生剥离类型后直接执行，
+`server.mjs` 里照常 `import './lib/trace.ts'`。得到的是类型本身的价值：契约类型定义在
+`lib/textparse.ts`（`SymbolNode` / `TrailEntry` / `Payload` 等「codegraph CLI 输出 → 内部结构」
+的唯一转换点），`Runner` / `RouteEntry` / `SymbolResolver` / `TraceResult` 等接口让
+`server.mjs` 与各模块之间、以及 `.mjs` 消费者都能被 `checkJs` 校验到字段名与形状。
+
+为此有两条硬约束：
 
 - 语法必须**可擦除**（不能用 `enum` / `namespace` / 构造函数参数属性），由 tsconfig 的
   `erasableSyntaxOnly` 强制；

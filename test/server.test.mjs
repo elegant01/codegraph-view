@@ -27,10 +27,10 @@ before(startServer);
 after(stopServer);
 
 test('GET /api/source 返回目标行 ±8 行片段', async () => {
-  const res = await fetch(`${BASE}/api/source?file=lib/validate.mjs&line=5`);
+  const res = await fetch(`${BASE}/api/source?file=lib/validate.ts&line=5`);
   assert.equal(res.status, 200);
   const data = await res.json();
-  assert.equal(data.file, 'lib/validate.mjs');
+  assert.equal(data.file, 'lib/validate.ts');
   assert.equal(data.line, 5);
   assert.ok(data.start >= 1 && data.start <= 5, 'start 应落在目标行之前');
   assert.ok(data.end > 5, 'end 应覆盖目标行');
@@ -41,12 +41,12 @@ test('GET /api/source 返回目标行 ±8 行片段', async () => {
 // /api/symbols 带 60s 缓存 + 同文件并发合流：并发请求必须返回一致结果、不串数据、不挂起。
 // CI 无索引时走 500 分支，同样只要求「不挂起、状态码可预期」。
 test('GET /api/symbols 并发同文件请求结果一致', async () => {
-  const url = `${BASE}/api/symbols?file=${encodeURIComponent('lib/validate.mjs')}`;
+  const url = `${BASE}/api/symbols?file=${encodeURIComponent('lib/validate.ts')}`;
   const rs = await Promise.all([fetch(url), fetch(url), fetch(url)]);
   const bodies = await Promise.all(rs.map(r => r.json()));
   for (const r of rs) assert.ok([200, 500].includes(r.status), '实际: ' + r.status);
   if (rs[0].status === 200) {
-    assert.equal(bodies[0].file, 'lib/validate.mjs');
+    assert.equal(bodies[0].file, 'lib/validate.ts');
     assert.ok(Array.isArray(bodies[0].symbols));
     assert.deepEqual(bodies[0], bodies[1]);
     assert.deepEqual(bodies[1], bodies[2]);
@@ -70,7 +70,7 @@ test('GET /api/source 拒绝绝对路径与盘符', async () => {
 test('GET /api/source 缺参 400 / 文件不存在 404 / 非法行号回落 1', async () => {
   assert.equal((await fetch(`${BASE}/api/source`)).status, 400);
   assert.equal((await fetch(`${BASE}/api/source?file=nope-not-exist.js&line=1`)).status, 404);
-  const res = await fetch(`${BASE}/api/source?file=lib/validate.mjs&line=999999`);
+  const res = await fetch(`${BASE}/api/source?file=lib/validate.ts&line=999999`);
   assert.equal(res.status, 200); // clampInt 钳到文件末尾附近而非报错
   const data = await res.json();
   assert.ok(data.total >= data.end, 'end 不应超过总行数');
@@ -129,7 +129,7 @@ test('GET /api/search 在 codegraph 不可用时快速失败（不挂起）', as
     assert.ok([200, 500].includes(res.status), '实际: ' + res.status);
     if (res.status === 200) assert.ok(Array.isArray(await res.json()));
   } catch (e) {
-    if (e.name === 'AbortError') assert.fail('/api/search 45s 未响应，疑似挂起');
+    if (e.name === 'AbortError') assert.fail('/api/search 150s 未响应，疑似挂起');
     throw e;
   } finally { clearTimeout(t); }
 });

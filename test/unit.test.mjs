@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { safeArg, safeFile, clampInt, assertShellSafe } from '../lib/validate.mjs';
+import { safeArg, safeFile, clampInt, assertShellSafe } from '../lib/validate.ts';
 import { parseJson, parseTrail, parseNodeKind, extractSource, isImportRef, fuzzyMatch, looksLikeNodeOutput } from '../lib/textparse.ts';
-import { parseRouteFile, matchRoute, parseGoRouteFile, parseBeegoAnnotations } from '../lib/routes.mjs';
-import { matchUrlPattern, parseSegTokens, matchSeg } from '../lib/urlmap.mjs';
-import { parseSourceCalls, lastSeg } from '../lib/sourcecalls.mjs';
+import { parseRouteFile, matchRoute, parseGoRouteFile, parseBeegoAnnotations } from '../lib/routes.ts';
+import { matchUrlPattern, parseSegTokens, matchSeg } from '../lib/urlmap.ts';
+import { parseSourceCalls, lastSeg } from '../lib/sourcecalls.ts';
 
 // ===== validate =====
 test('safeArg 拒绝控制字符（含换行/制表）', () => {
@@ -288,6 +288,7 @@ test('parseSegTokens / matchSeg 混合段', () => {
   assert.deepEqual(parseSegTokens('{controller}-{method}.html'), [
     { t: 'var', v: 'controller' }, { t: 'lit', v: '-' }, { t: 'var', v: 'method' }, { t: 'lit', v: '.html' },
   ]);
+  /** @type {Record<string, string>} */
   const out = {};
   assert.ok(matchSeg('{controller}-{method}.html', 'mod-page.html', out));
   assert.deepEqual(out, { controller: 'mod', method: 'page' });

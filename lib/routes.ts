@@ -8,8 +8,9 @@
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseJson } from './textparse.ts';
+import type { Runner } from './proc.ts';
 
-const RESTFUL = [
+const RESTFUL: ReadonlyArray<readonly [string, string, string]> = [
   ['GET', '', 'index'],
   ['POST', '', 'store'],
   ['GET', '/{id}', 'show'],
@@ -18,15 +19,41 @@ const RESTFUL = [
   ['DELETE', '/{id}', 'destroy'],
 ];
 
-const countOf = (s, ch) => s.split(ch).length - 1;
+const countOf = (s: string, ch: string): number => s.split(ch).length - 1;
+
+/** 一条路由。Laravel 与 Go（beego/gin）共用；匿名处理器在解析期就带 filePath/startLine */
+export interface RouteEntry {
+  url: string;
+  method: string;
+  handler: string;
+  /** 路由定义所在文件（相对项目根） */
+  file: string;
+  /** 路由定义所在行号（1 起） */
+  line: number;
+  /** 已定位到具体位置的处理器名（仅匿名处理器用；其余靠 handler 走符号解析） */
+  name?: string;
+  filePath?: string;
+  startLine?: number;
+}
+
+/** beego 控制器里的 `// @router /path [get,post]` 注解 */
+export interface BeegoAnnotation {
+  url: string;
+  methods: string[];
+  fn: string;
+  line: number;
+}
+
+/** 注解控制器：struct 名 → { 定义文件, 注解路由 } */
+type ControllerFiles = Map<string, { file: string; routes: BeegoAnnotation[] }>;
 
 // 逐行扫描，返回 [{ url, method, handler, file, line }]
-export function parseRouteFile(src, filePath) {
-  const routes = [];
+export function parseRouteFile(src: string, filePath: string): RouteEntry[] {
+  const routes: RouteEntry[] = [];
   const lines = src.split('\n');
-  const stack = []; // { prefix, closeAt } — closeAt 为 group 起始行之前的大括号深度
+  const stack: Array<{ prefix: string; closeAt: number }> = []; // closeAt 为 group 起始行之前的大括号深度
   let depth = 0;
-  const prefixes = () => stack.map(s => s.prefix).filter(Boolean).join('/');
+  const prefixes = (): string => stack.map(s => s.prefix).filter(Boolean).join('/');
 
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim();
@@ -40,7 +67,7 @@ export function parseRouteFile(src, filePath) {
     }
 
     const base = prefixes();
-    const joinUrl = (u) => ((base ? base + '/' : '') + u).replace(/\/+/g, '/');
+    const joinUrl = (u: string): string => ((base ? base + '/' : '') + u).replace(/\/+/g, '/');
 
     // Route::get/post/put/patch/delete/any('url', 'Controller@method')
     const rm = t.match(/Route::(get|post|put|patch|delete|any)\((['"])(.*?)\2\s*,\s*(['"])(.*?)\4\s*\)/);
@@ -60,17 +87,25 @@ export function parseRouteFile(src, filePath) {
   return routes;
 }
 
-export function createRouteParser({ root, run, ttlMs = 300000 }) {
-  let cache = { key: null, list: null, at: 0 };
-  let goCache = { key: null, list: null, at: 0 };
+export interface RouteParser {
+  parseLaravelRoutes(): Promise<RouteEntry[]>;
+  parseGoRoutes(): Promise<RouteEntry[]>;
+  invalidate(): void;
+}
 
-  async function parseLaravelRoutes() {
+export function createRouteParser({ root, run, ttlMs = 300000 }: {
+  root: string; run: Runner['run']; ttlMs?: number;
+}): RouteParser {
+  let cache: { key: string | null; list: RouteEntry[] | null; at: number } = { key: null, list: null, at: 0 };
+  let goCache: { key: string | null; list: RouteEntry[] | null; at: number } = { key: null, list: null, at: 0 };
+
+  async function parseLaravelRoutes(): Promise<RouteEntry[]> {
     const now = Date.now();
     if (cache.key === root && cache.list && now - cache.at < ttlMs) return cache.list;
     const out = await run(['files', '--json']);
     const files = parseJson(out, []);
-    const routeFiles = files.filter(f => /(?:^|\/)(?:routes|Routes)\/[^/]+\.php$/.test(f.path || ''));
-    const routes = [];
+    const routeFiles = files.filter((f: { path?: string }) => /(?:^|\/)(?:routes|Routes)\/[^/]+\.php$/.test(f.path || ''));
+    const routes: RouteEntry[] = [];
     for (const f of routeFiles) {
       const filePath = join(root, f.path);
       try {
@@ -82,14 +117,14 @@ export function createRouteParser({ root, run, ttlMs = 300000 }) {
     return routes;
   }
 
-  async function parseGoRoutes() {
+  async function parseGoRoutes(): Promise<RouteEntry[]> {
     const now = Date.now();
     if (goCache.key === root && goCache.list && now - goCache.at < ttlMs) return goCache.list;
     const out = await run(['files', '--json']);
     const files = parseJson(out, []);
-    const goFiles = files.filter(f => /\.go$/.test(f.path || ''));
+    const goFiles = files.filter((f: { path?: string }) => /\.go$/.test(f.path || ''));
     // 第一遍：读候选文件，收集 @router 注解控制器（struct 名 → 注解路由）
-    const readable = [];
+    const readable: Array<{ path: string; src: string }> = [];
     for (const f of goFiles) {
       const filePath = join(root, f.path);
       try {
@@ -98,7 +133,7 @@ export function createRouteParser({ root, run, ttlMs = 300000 }) {
         if (GO_ROUTE_HINT.test(src) || src.includes('@router')) readable.push({ path: f.path, src });
       } catch { /* 文件不可读则跳过 */ }
     }
-    const controllerFiles = new Map(); // structName → { file, routes }
+    const controllerFiles: ControllerFiles = new Map(); // structName → { file, routes }
     for (const f of readable) {
       if (!f.src.includes('@router')) continue;
       const ann = parseBeegoAnnotations(f.src);
@@ -108,7 +143,7 @@ export function createRouteParser({ root, run, ttlMs = 300000 }) {
       }
     }
     // 第二遍：解析路由注册
-    const routes = [];
+    const routes: RouteEntry[] = [];
     for (const f of readable) {
       if (!GO_ROUTE_HINT.test(f.src)) continue;
       routes.push(...parseGoRouteFile(f.src, f.path, controllerFiles));
@@ -128,7 +163,7 @@ const REGEX_META = /[.*+?^${}()|[\]\\]/g;
 
 // 路由 URL 匹配：`{key}`（Laravel）/ `:key`（beego/gin）段视为单段通配，`*x`（gin）为多段通配，
 // 其余字符正则转义（如 batchItems.json 的 . 不吞任意字符）
-export function matchRoute(routeUrl, inputUrl) {
+export function matchRoute(routeUrl: string, inputUrl: string): boolean {
   try {
     const pattern = String(routeUrl).split(/(\{[^}]+\}|\/:[^/]+|\/\*[^/]*)/)
       .map(seg => {
@@ -148,8 +183,8 @@ const GO_ROUTE_HINT = /beego\.(Router|NSRouter|NewNamespace|NSNamespace|NSInclud
 const GO_CTRL_DECL = /(\w+)\s*:?=\s*(?:&(?:\w+\.)?(\w+)\{\}|new\((?:\w+\.)?(\w+)\))/;
 
 // beego 方法映射串 "get:GetOne;post:Update" → [[GET, GetOne], ...]；裸 "get" 表示同名方法
-function parseBeegoMethodMap(mapStr) {
-  const out = [];
+function parseBeegoMethodMap(mapStr: string): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
   for (const part of String(mapStr).split(';')) {
     const p = part.trim();
     if (!p) continue;
@@ -167,20 +202,20 @@ function parseBeegoMethodMap(mapStr) {
 
 // 解析 beego / gin 路由文件，返回 [{ url, method, handler, file, line, name?, filePath?, startLine? }]
 // handler 形如 "ItemController@Add"（可经 resolveSymbol 定位）；匿名处理器直接带 file/line
-export function parseGoRouteFile(src, filePath, controllerFiles = new Map()) {
-  const routes = [];
+export function parseGoRouteFile(src: string, filePath: string, controllerFiles: ControllerFiles = new Map()): RouteEntry[] {
+  const routes: RouteEntry[] = [];
   const lines = src.split('\n');
   // beego 命名空间前缀栈：{ prefix, closeAt } — closeAt 为该调用开括号前的圆括号深度
-  const nsStack = [];
+  const nsStack: Array<{ prefix: string; closeAt: number }> = [];
   // gin 变量前缀：root := gin.Default() → ''；v1 := r.Group("/v1") → '/v1'
-  const varPrefix = new Map();
+  const varPrefix = new Map<string, string>();
   // 控制器变量声明：ctl := &controllers.ItemController{} → ItemController
-  const varType = new Map();
+  const varType = new Map<string, string>();
   let depth = 0;
-  const nsPrefix = () => nsStack.map(s => s.prefix).filter(Boolean).join('');
+  const nsPrefix = (): string => nsStack.map(s => s.prefix).filter(Boolean).join('');
   // 与 Laravel 路由一致：不带前导斜杠（/api/route 匹配前会剥输入的 /）
-  const joinUrl = (base, u) => ((base || '') + '/' + String(u || '')).replace(/\/+/g, '/').replace(/^\//, '');
-  const ctrlOf = (expr) => {
+  const joinUrl = (base: string, u: string): string => ((base || '') + '/' + String(u || '')).replace(/\/+/g, '/').replace(/^\//, '');
+  const ctrlOf = (expr: string): string | null => {
     // &controllers.ItemController{} / &ItemController{} / new(controllers.ItemController)
     const m = String(expr).match(/&(?:\w+\.)?(\w+)\s*\{\s*\}/) || String(expr).match(/new\(\s*(?:\w+\.)?(\w+)\s*\)/);
     return m ? m[1] : null;
@@ -193,13 +228,13 @@ export function parseGoRouteFile(src, filePath, controllerFiles = new Map()) {
 
     // --- beego：命名空间前缀入栈 ---
     for (const m of line.matchAll(/(?:beego\.)?(?:NewNamespace|NSNamespace)\s*\(\s*"([^"]*)"/g)) {
-      nsStack.push({ prefix: m[1], closeAt: curDepth + depthBeforeOpen(line, m.index) });
+      nsStack.push({ prefix: m[1], closeAt: curDepth + depthBeforeOpen(line, m.index ?? 0) });
     }
     // --- gin：根路由与 Group 变量 ---
     const rootM = t.match(/(\w+)\s*:?=\s*gin\.(?:Default|New)\s*\(/);
     if (rootM) varPrefix.set(rootM[1], '');
     const grpM = t.match(/(\w+)\s*:?=\s*(\w+)\.Group\s*\(\s*"([^"]*)"/);
-    if (grpM && varPrefix.has(grpM[2])) varPrefix.set(grpM[1], joinUrl(varPrefix.get(grpM[2]), grpM[3]));
+    if (grpM && varPrefix.has(grpM[2])) varPrefix.set(grpM[1], joinUrl(varPrefix.get(grpM[2])!, grpM[3]));
     // --- 控制器变量声明 ---
     const declM = t.match(GO_CTRL_DECL);
     if (declM && (declM[2] || declM[3])) varType.set(declM[1], declM[2] || declM[3]);
@@ -209,7 +244,7 @@ export function parseGoRouteFile(src, filePath, controllerFiles = new Map()) {
       const [, u, ctrlExpr, mapStr] = m;
       const cls = ctrlOf(ctrlExpr);
       if (!cls) continue;
-      const maps = mapStr ? parseBeegoMethodMap(mapStr) : [['ANY', 'Index']];
+      const maps = mapStr ? parseBeegoMethodMap(mapStr) : [['ANY', 'Index'] as [string, string]];
       for (const [method, fn] of maps) {
         routes.push({ url: joinUrl(nsPrefix(), u), method, handler: cls + '@' + fn, file: filePath, line: i + 1 });
       }
@@ -236,7 +271,7 @@ export function parseGoRouteFile(src, filePath, controllerFiles = new Map()) {
       if (!varPrefix.has(recv) && !/^(r|router|e|engine|s|srv|g|api|v\d+)$/.test(recv)) continue;
       const url = joinUrl(varPrefix.get(recv) || '', u);
       const args = rawArgs.replace(/\)\s*(?:\/\/.*)?$/, '');
-      const lastArg = topLevelSplit(args).pop().trim(); // 中间件链取最后一个
+      const lastArg = topLevelSplit(args).pop()!.trim(); // 中间件链取最后一个
       const dotM = lastArg.match(/(\w+)\.(\w+)$/);
       if (/^func\b/.test(lastArg)) {
         routes.push({ url, method: method.toUpperCase(), handler: '(匿名处理器)', file: filePath, line: i + 1, name: '(匿名处理器)', filePath, startLine: i + 1 });
@@ -257,7 +292,7 @@ export function parseGoRouteFile(src, filePath, controllerFiles = new Map()) {
 }
 
 // 该字符之前、同一行内的净开括号数（用于嵌套调用求 closeAt）
-function depthBeforeOpen(line, idx) {
+function depthBeforeOpen(line: string, idx: number): number {
   let d = 0;
   for (let i = 0; i < idx; i++) {
     if (line[i] === '(') d++;
@@ -267,9 +302,9 @@ function depthBeforeOpen(line, idx) {
 }
 
 // 按顶层逗号切分（忽略括号/字符串内的逗号），用于取中间件链最后一个参数
-function topLevelSplit(s) {
-  const parts = [];
-  let d = 0, cur = '', inStr = null;
+function topLevelSplit(s: string): string[] {
+  const parts: string[] = [];
+  let d = 0, cur = '', inStr: string | null = null;
   for (const ch of s) {
     if (inStr) { cur += ch; if (ch === inStr) inStr = null; continue; }
     if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; cur += ch; continue; }
@@ -282,8 +317,8 @@ function topLevelSplit(s) {
 }
 
 // 从控制器源码提取 @router 注解：// @router /path [get,post] 紧随其后的是 func (x *Ctl) Method()
-export function parseBeegoAnnotations(src) {
-  const out = [];
+export function parseBeegoAnnotations(src: string): BeegoAnnotation[] {
+  const out: BeegoAnnotation[] = [];
   const re = /@router\s+(\/\S*)\s*\[([^\]]+)\][\s\S]{0,200}?func\s*\(\s*\w+\s+\*?\w+\s*\)\s*(\w+)\s*\(/g;
   for (const m of src.matchAll(re)) {
     out.push({ url: m[1], methods: m[2].split(',').map(s => s.trim().toUpperCase()).filter(Boolean), fn: m[3], line: src.slice(0, m.index).split('\n').length });

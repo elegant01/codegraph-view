@@ -3,28 +3,79 @@
 import { existsSync, readFileSync, statSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const capFirst = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
-const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const capFirst = (s: string): string => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+const escRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** 定位结果：文件内的方法名与行号（行号找不到时为 null） */
+export interface MethodLine {
+  method: string;
+  line: number | null;
+}
+
+/** URL → 控制器文件的映射结果 */
+export interface UrlMapHit {
+  filePath: string;
+  name: string;
+  line: number | null;
+}
+
+/** URL 模式的一段：字面量或 `{var}` 变量 */
+export interface SegToken {
+  t: 'lit' | 'var';
+  v: string;
+}
+
+/** codegraph.route.json 里的控制器文件规则 */
+interface ControllerRule {
+  dir?: string;
+  prefix?: string;
+  ext?: string;
+  trySubdir?: boolean;
+}
+
+/** codegraph.route.json 里的方法命名规则 */
+interface MethodRule {
+  prefix?: string;
+  capitalize?: boolean;
+}
+
+/** codegraph.route.json 的结构（字段含义见 README「自定义框架」） */
+export interface UrlMapConfig {
+  basePath?: string;
+  patterns?: string[];
+  defaultMethod?: string;
+  controller?: ControllerRule;
+  method?: MethodRule;
+  overrides?: Record<string, string>;
+}
+
+/** 自动探测扫描到的一个控制器：control/ 下的 ctl<Name>.php 及其 funcXxx 方法 */
+interface AutoEntry {
+  module: string;
+  name: string;
+  methods: string[];
+  file: string;
+}
 
 // 在文件中定位方法；找不到指定方法时回退文件里第一个 func 方法；返回 { method, line }
-export function findMethodLine(root, file, method) {
+export function findMethodLine(root: string, file: string, method: string): MethodLine {
   try {
     const src = readFileSync(join(root, file), 'utf8');
     const m = src.match(new RegExp('function\\s+' + escRe(method) + '\\s*\\('));
     if (m) return { method, line: src.slice(0, m.index).split('\n').length };
     const f = src.match(/function\s+func\w+\s*\(/);
-    if (f) return { method: f[0].match(/function\s+(\w+)/)[1], line: src.slice(0, f.index).split('\n').length };
+    if (f) return { method: f[0].match(/function\s+(\w+)/)![1], line: src.slice(0, f.index).split('\n').length };
     return { method, line: null };
   } catch { return { method, line: null }; }
 }
 
 // 按 controller 配置生成候选文件路径：模块目录优先，逐级回退
-function controllerFiles(cc, module, controller) {
+function controllerFiles(cc: ControllerRule, module: string | undefined, controller: string): string[] {
   const base = (cc.dir ? cc.dir.replace(/\/+$/, '') : '') + '/';
   const ext = cc.ext || '.php';
   const pref = cc.prefix || '';
   const mod = module ? capFirst(module) : '';
-  const out = [];
+  const out: string[] = [];
   if (module && cc.trySubdir !== false) {
     out.push(base + module + '/' + pref + mod + controller + ext);
     out.push(base + module + '/' + pref + controller + ext);
@@ -34,8 +85,8 @@ function controllerFiles(cc, module, controller) {
 }
 
 // 匹配单个 pattern 段：纯变量 {x}、带前后缀（{controller}.html）、多变量混合段（{a}-{b}.html）
-export function parseSegTokens(patSeg) {
-  const toks = [];
+export function parseSegTokens(patSeg: string): SegToken[] {
+  const toks: SegToken[] = [];
   let lit = '';
   for (let i = 0; i < patSeg.length; i++) {
     if (patSeg[i] === '{') {
@@ -50,7 +101,7 @@ export function parseSegTokens(patSeg) {
   return toks;
 }
 
-export function matchSeg(patSeg, urlSeg, out) {
+export function matchSeg(patSeg: string, urlSeg: string, out: Record<string, string>): boolean {
   const toks = parseSegTokens(patSeg);
   if (!toks.some(t => t.t === 'var')) return patSeg === urlSeg;
   if (toks.length === 1 && toks[0].t === 'var') { out[toks[0].v] = urlSeg; return true; }
@@ -65,40 +116,54 @@ export function matchSeg(patSeg, urlSeg, out) {
 }
 
 // 匹配 URL（去掉 basePath 后）到 pattern，返回命名段；不匹配返回 null
-export function matchUrlPattern(pattern, url) {
+export function matchUrlPattern(pattern: string, url: string): Record<string, string> | null {
   const pSegs = pattern.split('/').filter(Boolean);
   const uSegs = url.split('/').filter(Boolean);
   if (pSegs.length !== uSegs.length) return null;
-  const out = {};
+  const out: Record<string, string> = {};
   for (let i = 0; i < pSegs.length; i++) {
     if (!matchSeg(pSegs[i], uSegs[i], out)) return null;
   }
   return out;
 }
 
-export function createUrlMapper({ root, ttlMs = 60000, controlDir = 'control' }) {
-  let cfgCache = { key: null, cfg: null, at: 0 };
-  let autoCache = { key: null, entries: null, at: 0 };
+export interface UrlMapper {
+  /** 核心：URL → { filePath, name, line }；匹配不到返回 null */
+  matchUrlMap(urlPath: string): UrlMapHit | null;
+  /** 清掉配置/自动探测缓存（reindex 或配置变更后调用） */
+  invalidate(): void;
+}
 
-  function loadUrlMap() {
+// U+FEFF：route.json 被编辑器写成带 BOM 时也要能解析。
+// 用 String.fromCharCode 而不是把 BOM 字面写进正则，避免源码里出现不可见字符。
+const BOM = String.fromCharCode(0xFEFF);
+
+export function createUrlMapper({ root, ttlMs = 60000, controlDir = 'control' }: {
+  root: string; ttlMs?: number; controlDir?: string;
+}): UrlMapper {
+  let cfgCache: { key: string | null; cfg: UrlMapConfig | null; at: number } = { key: null, cfg: null, at: 0 };
+  let autoCache: { key: string | null; entries: AutoEntry[] | null; at: number } = { key: null, entries: null, at: 0 };
+
+  function loadUrlMap(): UrlMapConfig | null {
     const now = Date.now();
     if (cfgCache.key === root && cfgCache.cfg && now - cfgCache.at < ttlMs) return cfgCache.cfg;
-    let cfg = null;
+    let cfg: UrlMapConfig | null = null;
     try {
-      cfg = JSON.parse(readFileSync(join(root, 'codegraph.route.json'), 'utf8').replace(/^[\uFEFF]/, '')); // 容错 UTF-8 BOM
+      const raw = readFileSync(join(root, 'codegraph.route.json'), 'utf8');
+      cfg = JSON.parse(raw.startsWith(BOM) ? raw.slice(1) : raw); // 容错 UTF-8 BOM
     } catch { /* 无配置则返回 null */ }
     cfgCache = { key: root, cfg, at: now };
     return cfg;
   }
 
   // 自动探测：扫描 control/ 下 ctl<Name>.php（含模块子目录），提取 funcXxx 方法
-  function buildAutoUrlMap() {
+  function buildAutoUrlMap(): AutoEntry[] {
     const now = Date.now();
     if (autoCache.key === root && autoCache.entries && now - autoCache.at < ttlMs) return autoCache.entries;
-    const entries = [];
+    const entries: AutoEntry[] = [];
     if (!existsSync(join(root, controlDir))) { autoCache = { key: root, entries: [], at: now }; return entries; }
-    const walk = (relDir) => {
-      let files = [];
+    const walk = (relDir: string): void => {
+      let files: string[] = [];
       try { files = readdirSync(join(root, relDir)); } catch { return; }
       for (const f of files) {
         const full = join(root, relDir, f);
@@ -108,7 +173,7 @@ export function createUrlMapper({ root, ttlMs = 60000, controlDir = 'control' })
         else if (/^ctl[\w]+\.php$/.test(f)) {
           const name = f.slice(3, -4);
           const module = relDir === controlDir ? '' : relDir.split('/').slice(1).join('/');
-          const methods = [];
+          const methods: string[] = [];
           try {
             const src = readFileSync(full, 'utf8');
             for (const m of src.matchAll(/function\s+(func\w+)\s*\(/g)) methods.push(m[1]);
@@ -123,20 +188,20 @@ export function createUrlMapper({ root, ttlMs = 60000, controlDir = 'control' })
   }
 
   // URL 段 → controller 变体（如 TvRoom → ['TvRoom','Room']，去掉模块前缀）
-  function ctrlVariants(name, module) {
+  function ctrlVariants(name: string, module: string): string[] {
     const out = [name];
     if (module && name.startsWith(capFirst(module))) out.push(name.slice(module.length));
     return out;
   }
 
-  function matchUrlMapAuto(urlPath) {
+  function matchUrlMapAuto(urlPath: string): UrlMapHit | null {
     const entries = buildAutoUrlMap();
     if (!entries.length) return null;
     const url = urlPath.replace(/[?#].*$/, '').replace(/^\/+/, '').replace(/\/+$/, '');
     const segs = url.split('/').filter(Boolean);
     if (!segs.length) return null;
     const last = segs[segs.length - 1].replace(/\.\w+$/, '');
-    let controllerPart = last, methodPart = null;
+    let controllerPart = last, methodPart: string | null = null;
     if (last.includes('-')) {
       const parts = last.split('-');
       controllerPart = parts[0];
@@ -146,7 +211,7 @@ export function createUrlMapper({ root, ttlMs = 60000, controlDir = 'control' })
     for (const e of entries) {
       if (modulePart && e.module && e.module.toLowerCase() !== modulePart.toLowerCase()) continue;
       if (!ctrlVariants(e.name, e.module).some(v => v.toLowerCase() === controllerPart.toLowerCase())) continue;
-      let method = null;
+      let method: string | null = null;
       if (methodPart) method = 'func' + capFirst(methodPart);
       else method = e.methods.includes('funcIndex') ? 'funcIndex' : (e.methods[0] || null);
       if (!method) continue;
@@ -158,7 +223,7 @@ export function createUrlMapper({ root, ttlMs = 60000, controlDir = 'control' })
 
   // 核心：URL → { filePath, name, line }
   // 优先级：配置文件 overrides → 配置 patterns（存在才用）→ 自动探测（无配置/无 patterns 时）
-  function matchUrlMap(urlPath) {
+  function matchUrlMap(urlPath: string): UrlMapHit | null {
     const cfg = loadUrlMap();
     let url = urlPath.replace(/[?#].*$/, '').replace(/^\/+/, '');
     url = '/' + url;
@@ -175,7 +240,7 @@ export function createUrlMapper({ root, ttlMs = 60000, controlDir = 'control' })
           const segs = matchUrlPattern(pat, url);
           if (!segs) continue;
           const methodName = segs.method || cfg.defaultMethod || 'index';
-          const fullMethod = (cfg.method && cfg.method.prefix || '') + (cfg.method && cfg.method.capitalize !== false ? capFirst(methodName) : methodName);
+          const fullMethod = ((cfg.method && cfg.method.prefix) || '') + ((cfg.method && cfg.method.capitalize !== false) ? capFirst(methodName) : methodName);
           const ctrl = capFirst(segs.controller);
           for (const file of controllerFiles(cfg.controller || {}, segs.module, ctrl)) {
             if (!existsSync(join(root, file))) continue;
