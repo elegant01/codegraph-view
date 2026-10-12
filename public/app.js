@@ -165,18 +165,23 @@ function clearGraphEdges() {
   adjIn.clear(); adjOut.clear();
 }
 
+// catch 到的是 unknown（throw 的不一定是 Error）：取可读消息。
+// 后端 lib/err.ts 有同一实现；app.js 是经典脚本、不能 import，故本地留一份。
+/** @param {unknown} e @returns {string} */
+function errMsg(e) { return e instanceof Error ? e.message : String(e); }
+
 /** @param {unknown} s @returns {string} */
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c] || c)); }
 /** @param {unknown} s @returns {string} */
 function escAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
 /** @param {string|null|undefined} kind @returns {string} */
 function badge(kind) {
-  const label = KIND_LABEL[kind] || (kind || '符号');
-  return `<span class="badge k-${KIND_CLASS[kind] || 'property'}">${esc(label)}</span>`;
+  const label = KIND_LABEL[kind || ''] || (kind || '符号');
+  return `<span class="badge k-${KIND_CLASS[kind || ''] || 'property'}">${esc(label)}</span>`;
 }
 
-/** @type {ReturnType<typeof setTimeout>|null} 报错自动消失定时器（与 loading 态互斥） */
-let noticeTimer = null;
+/** @type {ReturnType<typeof setTimeout>|undefined} 报错自动消失定时器（与 loading 态互斥） */
+let noticeTimer;
 /** @param {string} msg */
 function notice(msg) {
   const el = $('#notice');
@@ -188,8 +193,8 @@ function notice(msg) {
   noticeTimer = setTimeout(() => { el.style.display = 'none'; }, 4500);
 }
 // 加载提示：一直显示直到 clearLoading()，区别于会自动消失的报错
-/** @type {ReturnType<typeof setInterval>|null} 顶部进度条递增定时器 */
-let progressTimer = null;
+/** @type {ReturnType<typeof setInterval>|undefined} 顶部进度条递增定时器 */
+let progressTimer;
 /** @param {string} msg */
 function loading(msg) {
   const el = $('#notice');
@@ -222,6 +227,11 @@ function clearLoading() {
     if (bar.style.display !== 'none') { bar.style.display = 'none'; pf.style.width = '0%'; }
   }, 450);
 }
+
+/** data-* 取值：DOMStringMap 的索引签名是 string|undefined，而这些属性都是渲染时自己写上去的，
+ * 按存在处理（缺失时给空串，调用处的后续判断会兜住）
+ * @param {HTMLElement|SVGElement} el @param {string} name @returns {string} */
+function ds(el, name) { return el.dataset[name] || ''; }
 
 // 事件目标最近的匹配祖先元素（SVG 里 e.target 是 EventTarget，需断言成 Element 才能 closest）
 /** @param {Event} e @param {string} sel @returns {Element|null} */
@@ -272,7 +282,7 @@ svg.addEventListener('mousedown', e => {
   svg.classList.add('dragging');
 });
 window.addEventListener('mousemove', e => {
-  if (!panning) return;
+  if (!panning || !panStart || !panOrigin) return;
   if (Math.abs(e.clientX - panStart.x) + Math.abs(e.clientY - panStart.y) > 4) didPan = true;
   viewTransform.x = panOrigin.x + (e.clientX - panStart.x);
   viewTransform.y = panOrigin.y + (e.clientY - panStart.y);
@@ -300,24 +310,28 @@ function clientToGraph(e) {
 function updateNodeEdges(key) {
   if (!lastLayout || !lastLayout.boxes) return;
   const sel = `.edge[data-a="${CSS.escape(key)}"], .edge[data-b="${CSS.escape(key)}"]`;
+  const { pos, boxes } = lastLayout;
   /** @type {SVGElement[]} */ ([...document.querySelectorAll(sel)]).forEach(el => {
-    const pa = lastLayout.pos.get(el.dataset.a), pb = lastLayout.pos.get(el.dataset.b);
-    const ba = lastLayout.boxes.get(el.dataset.a), bb = lastLayout.boxes.get(el.dataset.b);
+    const a = ds(el, 'a'), b = ds(el, 'b');
+    const pa = pos.get(a), pb = pos.get(b);
+    const ba = boxes.get(a), bb = boxes.get(b);
     if (!pa || !pb || !ba || !bb) return;
-    el.setAttribute('d', edgePath(pa, pb, ba, bb, el.dataset.cycle === '1', +el.dataset.idx || 0));
+    el.setAttribute('d', edgePath(pa, pb, ba, bb, ds(el, 'cycle') === '1', +ds(el, 'idx') || 0));
   });
 }
 viewport.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
   const n = /** @type {SVGElement|null} */ (closestEl(e, '.node'));
-  if (!n || !n.dataset.key || !lastLayout) return;
-  const p = lastLayout.pos.get(n.dataset.key);
+  if (!n || !lastLayout) return;
+  const key = ds(n, 'key');
+  if (!key) return;
+  const p = lastLayout.pos.get(key);
   if (!p) return;
   e.stopPropagation(); // 落在卡片上时不触发画布平移
-  dragNode = { key: n.dataset.key, el: n, startClient: { x: e.clientX, y: e.clientY }, startGraph: clientToGraph(e), startPos: { x: p.x, y: p.y }, moved: false };
+  dragNode = { key, el: n, startClient: { x: e.clientX, y: e.clientY }, startGraph: clientToGraph(e), startPos: { x: p.x, y: p.y }, moved: false };
 });
 window.addEventListener('mousemove', (e) => {
-  if (!dragNode) return;
+  if (!dragNode || !lastLayout) return;
   if (!dragNode.moved) {
     // 4px 阈值内视为点击，不进入拖动
     if (Math.abs(e.clientX - dragNode.startClient.x) + Math.abs(e.clientY - dragNode.startClient.y) <= 4) return;
@@ -373,7 +387,7 @@ async function doSearch() {
     bindHits($('#resultsBody'));
     updateHeaderInfo(`${hits.length} 个搜索结果`);
     clearLoading();
-  } catch (e) { notice('搜索失败：' + e.message); clearLoading(); }
+  } catch (e) { notice('搜索失败：' + errMsg(e)); clearLoading(); }
 }
 
 // 搜索结果按符号类型分组显示：同组内保持原排序，组头带计数；无 kind 的归入「其他」
@@ -383,9 +397,10 @@ function renderGroupedHits(hits) {
   /** @type {Map<string, Hit[]>} */
   const byKind = new Map();
   for (const h of hits) {
-    const k = GROUP_ORDER.includes(h.kind) ? h.kind : 'other';
-    if (!byKind.has(k)) byKind.set(k, []);
-    byKind.get(k).push(h);
+    const k = GROUP_ORDER.includes(h.kind || '') ? (h.kind || 'other') : 'other';
+    const arr = byKind.get(k);
+    if (arr) arr.push(h);
+    else byKind.set(k, [h]);
   }
   /** @param {Hit} h @returns {string} */
   const hitHtml = (h) =>
@@ -542,9 +557,9 @@ function renderFileHits(title, urlPath, hits, kind = '接口文件') {
 function bindHits(root) {
   resFocusReset();
   /** @type {HTMLElement[]} */ ([...root.querySelectorAll('.hit[data-symbol]')]).forEach(el => {
-    el.onclick = () => startGraph(el.dataset.symbol, el.dataset.name, el.dataset.file);
+    el.onclick = () => startGraph(ds(el, 'symbol'), ds(el, 'name'), ds(el, 'file'));
     const tb = /** @type {HTMLElement|null} */ (el.querySelector('.trace-btn'));
-    if (tb) tb.onclick = (e) => { e.stopPropagation(); startTrace(el.dataset.symbol, el.dataset.name, el.dataset.file, e.shiftKey ? 'up' : 'down'); };
+    if (tb) tb.onclick = (e) => { e.stopPropagation(); startTrace(ds(el, 'symbol'), ds(el, 'name'), ds(el, 'file'), e.shiftKey ? 'up' : 'down'); };
   });
 }
 
@@ -556,7 +571,7 @@ function updateCrumbs() {
   }).join('');
   /** @type {HTMLElement[]} */ ([...$('#crumbs').querySelectorAll('span[data-idx]')]).forEach(el => {
     el.onclick = () => {
-      const idx = Number(el.dataset.idx);
+      const idx = Number(ds(el, 'idx'));
       const item = history[idx];
       if (!item) return;
       history.length = idx + 1;
@@ -665,7 +680,7 @@ $('#btnImplementations').onclick = async () => {
       </div>`).join('') : '<div class="hit">未找到实现；请确认已建立最新 codegraph 索引。</div>';
     bindHits($('#resultsBody'));
     updateHeaderInfo(`实现：${hits.length} 个候选`);
-  } catch (e) { $('#resultsBody').innerHTML = `<div class="hit">查询实现失败：${esc(e.message)}</div>`; }
+  } catch (e) { $('#resultsBody').innerHTML = `<div class="hit">查询实现失败：${esc(errMsg(e))}</div>`; }
 };
 
 // 把一次 /api/graph 结果并入图模型（过滤 import 引用与类型节点，保持图干净）
@@ -676,8 +691,8 @@ const GRAPH_SKIP_KIND = new Set(['import', 'interface', 'type']);
 function isRefNoise(c) { return !!(c && ((c.kind && GRAPH_SKIP_KIND.has(c.kind)) || isImportRef(c.name))); }
 /** @param {GraphResponse} data @param {string} key */
 function integrate(data, key) {
-  for (const c of data.callers || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath, c.kind, c.startLine); addEdge(n.key, key); }
-  for (const c of data.callees || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath, c.kind, c.startLine); addEdge(key, n.key); }
+  for (const c of data.callers || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath || null, c.kind || null, c.startLine ?? null); addEdge(n.key, key); }
+  for (const c of data.callees || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath || null, c.kind || null, c.startLine ?? null); addEdge(key, n.key); }
 }
 
 // 全新开始：以 symbol 为中心。query 用于 API（可为限定名），name+file 用于节点键
@@ -698,14 +713,14 @@ async function startGraph(query, name, file) {
       const n = graph.nodes.get(k);
       if (n) n.expanded = true;
     }
-    history.push({ symbol: data.symbol, file, key: center.key, trace: false });
+    history.push({ symbol: data.symbol || name, file, key: center.key, trace: false });
     updateCrumbs();
     saveHash();
-    showSource(data, file);
+    showSource(data, file || null);
     relayout();
     resetView();
     clearLoading();
-  } catch (e) { notice('加载调用图失败：' + e.message); }
+  } catch (e) { notice('加载调用图失败：' + errMsg(e)); }
 }
 
 // 全链路：递归展开某符号的调用链（direction=down 向下它调谁 / up 向上谁调它），SSE 流式进度，可取消
@@ -779,14 +794,14 @@ function startTrace(query, name, file, direction = 'down') {
     for (const n of refs) {
       if (n.key !== center.key && calleesOf(n.key).length > 0) n.expanded = true;
     }
-    history.push({ symbol: data.symbol, file, key: center.key, trace: true, direction });
+    history.push({ symbol: data.symbol || query, file, key: center.key, trace: true, direction });
     updateCrumbs();
     saveHash();
-    showSource(data, file);
+    showSource(data, file || null);
     relayout();
     resetView();
     clearLoading();
-    updateHeaderInfo(`${document.querySelector('#headerInfo').textContent} · ${direction === 'up' ? '上游链' : '链路'}深度 ${data.depth}${data.truncated ? ' · ⚠ 已截断' : ''}${data.cancelled ? ' · 已取消（部分结果）' : ''}`);
+    updateHeaderInfo(`${document.querySelector('#headerInfo')?.textContent || ''} · ${direction === 'up' ? '上游链' : '链路'}深度 ${data.depth}${data.truncated ? ' · ⚠ 已截断' : ''}${data.cancelled ? ' · 已取消（部分结果）' : ''}`);
   });
   es.addEventListener('error', (e) => {
     if (settled) return;
@@ -862,7 +877,8 @@ async function expandNode(key, direction = 'auto') {
     if (expandStack.length > 20) expandStack.shift();
     node.expanded = true;
     // auto 时按节点当前所处层判断方向（点击必发生在渲染后，lastLayout 必有该节点）
-    const layer = lastLayout && lastLayout.pos.has(key) ? lastLayout.pos.get(key).layer : 0;
+    const lp = lastLayout ? lastLayout.pos.get(key) : undefined;
+    const layer = lp ? lp.layer : 0;
     const dir = direction === 'auto' ? (layer > 0 ? 'down' : layer < 0 ? 'up' : 'both') : direction;
     integrate({
       callers: dir === 'down' ? [] : (data.callers || []),
@@ -888,7 +904,7 @@ async function expandNode(key, direction = 'auto') {
   } catch (e) {
     restoreSnapshot(snap);
     relayout();
-    notice('展开失败，已恢复：' + e.message);
+    notice('展开失败，已恢复：' + errMsg(e));
   }
   finally { expanding = false; }
 }
@@ -907,7 +923,7 @@ async function expandCallers(key) {
     if (expandStack.length > 20) expandStack.shift();
     node.expanded = true;
     // 只并入调用者侧，避免「展开上层」把它的被调用者也带进来
-    for (const c of data.callers || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath, c.kind, c.startLine); addEdge(n.key, key); }
+    for (const c of data.callers || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath || null, c.kind || null, c.startLine ?? null); addEdge(n.key, key); }
     relayout();
     const added = graph.nodes.size - snap.nodes.size;
     notice(added ? `已展开 ${added} 个调用者` : '没有更多调用者');
@@ -915,7 +931,7 @@ async function expandCallers(key) {
   } catch (e) {
     restoreSnapshot(snap);
     relayout();
-    notice('展开失败，已恢复：' + e.message);
+    notice('展开失败，已恢复：' + errMsg(e));
   }
   finally { expanding = false; }
 }
@@ -947,9 +963,8 @@ function layoutGraph() {
   const layerOf = new Map([[graph.centerKey || '', 0]]);
   /** @type {string[]} */
   const q = [graph.centerKey || ''];
-  while (q.length) {
-    const u = q.shift();
-    const L = layerOf.get(u);
+  for (let u = q.shift(); u !== undefined; u = q.shift()) {
+    const L = layerOf.get(u) ?? 0;
     for (const v of callersOf(u)) if (!layerOf.has(v) && shouldShow(v)) { layerOf.set(v, L - 1); q.push(v); }
     for (const v of calleesOf(u)) if (!layerOf.has(v) && shouldShow(v)) { layerOf.set(v, L + 1); q.push(v); }
   }
@@ -963,11 +978,11 @@ function layoutGraph() {
   /** @param {string} k @param {number|null} innerL @returns {number} */
   const innerY = (k, innerL) => {
     if (innerL == null) return CY;
-    const ys = neighborsOf(k).filter(n => layerOf.get(n) === innerL && pos.has(n)).map(n => pos.get(n).y);
+    const ys = neighborsOf(k).filter(n => layerOf.get(n) === innerL && pos.has(n)).map(n => pos.get(n)?.y ?? CY);
     return ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : CY;
   };
   for (const L of order) {
-    const nodes = byLayer.get(L);
+    const nodes = byLayer.get(L) || [];
     const innerL = L < 0 ? L + 1 : (L > 0 ? L - 1 : null);
     nodes.sort((a, b) => innerY(a, innerL) - innerY(b, innerL));
     const x = CX + L * colW;
@@ -1010,7 +1025,7 @@ function relayout() {
 
   // 大图防卡顿：节点过多时只渲染靠近中心的部分（MAX_VISIBLE），其余以角标提示
   const MAX_VISIBLE = 150;
-  const allKeys = [...pos.keys()].sort((a, b) => Math.abs(pos.get(a).layer) - Math.abs(pos.get(b).layer));
+  const allKeys = [...pos.keys()].sort((a, b) => Math.abs(pos.get(a)?.layer ?? 0) - Math.abs(pos.get(b)?.layer ?? 0));
   const visibleKeys = renderAllNodes ? allKeys : allKeys.slice(0, MAX_VISIBLE);
   const hiddenCount = allKeys.length - visibleKeys.length;
   const visibleSet = new Set(visibleKeys);
@@ -1035,8 +1050,8 @@ function relayout() {
     const i = e.indexOf(SEP);
     const a = e.slice(0, i), b = e.slice(i + 1);
     if (!visibleSet.has(a) || !visibleSet.has(b)) continue;
-    const pa = pos.get(a), pb = pos.get(b);
-    if (!pa || !pb) continue;
+    const pa = pos.get(a), pb = pos.get(b), ba = boxes.get(a), bb = boxes.get(b);
+    if (!pa || !pb || !ba || !bb) continue;
     edgeCount++;
     let cls = 'edge', marker = 'arr';
     if (b === graph.centerKey) { cls += ' to-center'; marker = 'arrIn'; }
@@ -1046,7 +1061,7 @@ function relayout() {
     if (cycle) cls += ' cycle';
     if (pathHL.edges.has(a + SEP + b)) cls += ' on-path';
     viewport.appendChild(g('path', {
-      d: edgePath(pa, pb, boxes.get(a), boxes.get(b), cycle, edgeCount),
+      d: edgePath(pa, pb, ba, bb, cycle, edgeCount),
       'class': cls,
       'marker-end': `url(#${marker})`,
       'data-a': a,
@@ -1058,9 +1073,10 @@ function relayout() {
 
   // 节点
   for (const key of visibleKeys) {
-    const node = graph.nodes.get(key);
-    const el = mkNode(node, pos.get(key));
-    if (pathHL.nodes.has(key)) el.setAttribute('class', el.getAttribute('class') + ' on-path');
+    const node = graph.nodes.get(key), p = pos.get(key);
+    if (!node || !p) continue;
+    const el = mkNode(node, p);
+    if (pathHL.nodes.has(key)) el.setAttribute('class', (el.getAttribute('class') || '') + ' on-path');
     viewport.appendChild(el);
   }
 
@@ -1068,6 +1084,7 @@ function relayout() {
   let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
   for (const key of visibleKeys) {
     const p = pos.get(key);
+    if (!p) continue;
     minX = Math.min(minX, p.x - 135); maxX = Math.max(maxX, p.x + 135);
     minY = Math.min(minY, p.y - 40); maxY = Math.max(maxY, p.y + 40);
   }
@@ -1113,7 +1130,7 @@ function mkNode(node, p) {
   const isz = 26, ix = -w / 2 + 10;
   grp.appendChild(g('rect', { class: 'ico', x: ix, y: -isz / 2, width: isz, height: isz, rx: 7 }));
   const glyph = g('text', { class: 'ico-glyph', x: ix + isz / 2, y: 4.5, 'text-anchor': 'middle' });
-  glyph.textContent = KIND_GLYPH[node.kind] || 'ƒ';
+  glyph.textContent = KIND_GLYPH[node.kind || ''] || 'ƒ';
   grp.appendChild(glyph);
   // 标题与元信息左对齐
   const tx = ix + isz + 9;
@@ -1183,6 +1200,7 @@ function drawMinimap() {
     if (!lastLayout || graph.nodes.size < 4) { cv.style.display = 'none'; return; }
     cv.style.display = 'block';
     const ctx = cv.getContext('2d');
+    if (!ctx) return;
     const { pos, vb, visibleKeys } = lastLayout;
     const W = cv.width, H = cv.height;
     ctx.clearRect(0, 0, W, H);
@@ -1258,16 +1276,16 @@ function showCtx(key, x, y) {
   const node = graph.nodes.get(key);
   if (!node) return;
   const isCenter = key === graph.centerKey;
-  const items = [
+  const items = /** @type {Array<{ label?: string, act?: () => void, sep?: boolean }>} */ ([
     { label: '🎯 以此为中心', act: () => { history.push({ symbol: node.name, file: node.file, key }); expandStack.length = 0; graph.centerKey = key; node.expanded = true; updateCrumbs(); relayout(); } },
     !isCenter && !node.expanded && { label: '⤵ 展开下层（它调用的）', act: () => expandNode(key, 'down') },
     !isCenter && { label: '⤴ 展开上层（调用它的）', act: () => expandCallers(key) },
     { sep: true },
-    node.file && { label: '⧉ 复制文件路径', act: () => copyText(node.file, '已复制路径') },
+    node.file && { label: '⧉ 复制文件路径', act: () => copyText(node.file || '', '已复制路径') },
     node.file && { label: '↗ 在编辑器打开', act: async () => { window.open(vscodeUrl(node.file, node.line, await ensureRoot())); } },
-  ].filter(Boolean);
+  ].filter(Boolean));
   ctxMenu.innerHTML = items.map((it, i) => it.sep ? '<div class="ctx-sep"></div>' : `<div class="ctx-item" data-i="${i}">${it.label}</div>`).join('');
-  /** @type {HTMLElement[]} */ ([...ctxMenu.querySelectorAll('.ctx-item')]).forEach(el => { el.onclick = () => { hideCtx(); items[Number(el.dataset.i)].act(); }; });
+  /** @type {HTMLElement[]} */ ([...ctxMenu.querySelectorAll('.ctx-item')]).forEach(el => { el.onclick = () => { hideCtx(); items[Number(ds(el, 'i'))].act?.(); }; });
   ctxMenu.style.display = 'block';
   const tw = ctxMenu.offsetWidth, th = ctxMenu.offsetHeight;
   ctxMenu.style.left = Math.min(x, innerWidth - tw - 8) + 'px';
@@ -1276,9 +1294,9 @@ function showCtx(key, x, y) {
 // 事件委托：relayout 重建 DOM 后无需重新绑定；任意点击/Esc 关闭
 viewport.addEventListener('contextmenu', (e) => {
   const n = /** @type {SVGElement|null} */ (closestEl(e, '.node'));
-  if (!n || !n.dataset.key) return hideCtx();
+  if (!n || !ds(n, 'key')) return hideCtx();
   e.preventDefault();
-  showCtx(n.dataset.key, e.clientX, e.clientY);
+  showCtx(ds(n, 'key'), e.clientX, e.clientY);
 });
 window.addEventListener('click', hideCtx);
 window.addEventListener('blur', hideCtx);
@@ -1313,10 +1331,10 @@ $('#btnPath').onclick = () => {
 viewport.addEventListener('click', (e) => {
   if (!pathMode) return;
   const n = /** @type {SVGElement|null} */ (closestEl(e, '.node'));
-  if (!n || !n.dataset.key) return;
+  if (!n || !ds(n, 'key')) return;
   e.stopPropagation();
   e.preventDefault();
-  const key = n.dataset.key;
+  const key = ds(n, 'key');
   if (!pathSrcKey) { pathSrcKey = key; notice('路径查找：点击终点节点'); return; }
   const found = findPath(pathSrcKey, key);
   if (!found) { notice('两个节点之间没有连通的调用路径'); pathSrcKey = key; return; }
@@ -1331,17 +1349,17 @@ viewport.addEventListener('click', (e) => {
 /** @param {string} fromKey @param {string} toKey @returns {PathHit|null} */
 function findPath(fromKey, toKey) {
   if (fromKey === toKey) return { nodes: [fromKey], edges: [] };
+  /** @type {Map<string, string|null>} */
   const prev = new Map([[fromKey, null]]);
   const q = [fromKey];
-  while (q.length) {
-    const u = q.shift();
+  for (let u = q.shift(); u !== undefined; u = q.shift()) {
     for (const v of calleesOf(u)) {
       if (prev.has(v)) continue;
       prev.set(v, u);
       if (v === toKey) {
         const nodes = [], edges = [];
-        let cur = toKey;
-        while (cur !== null) { nodes.unshift(cur); const p = prev.get(cur); if (p) edges.unshift(p + SEP + cur); cur = p; }
+        let cur = /** @type {string|null|undefined} */ (toKey);
+        while (cur != null) { nodes.unshift(cur); const p = prev.get(cur); if (p) edges.unshift(p + SEP + cur); cur = p; }
         return { nodes, edges };
       }
       q.push(v);
@@ -1352,7 +1370,7 @@ function findPath(fromKey, toKey) {
 
 // ===== 上游链按钮：以当前中心为终点向上展开「谁调用了它」 =====
 $('#btnTraceUp').onclick = () => {
-  const c = graph.nodes.get(graph.centerKey);
+  const c = graph.centerKey ? graph.nodes.get(graph.centerKey) : undefined;
   if (!c) { notice('先选中一个符号'); return; }
   startTrace(c.query || c.name, c.name, c.file, 'up');
 };
@@ -1370,7 +1388,7 @@ async function loadFiles() {
     // PHP/Laravel 项目：默认显示接口/路由列表（按文件分组）
     const hasRoutes = allFiles.some(f => /Routes?\//.test(f.path || ''));
     if (hasRoutes) showRouteList();
-  } catch (e) { notice('加载文件列表失败：' + e.message); }
+  } catch (e) { notice('加载文件列表失败：' + errMsg(e)); }
 }
 
 // 显示所有 Laravel 路由列表（接口发现面板）
@@ -1382,11 +1400,11 @@ async function showRouteList() {
     const escFn = esc, escAttrFn = escAttr;
     /** @type {Record<string, Hit[]>} */
     const byFile = {};
-    for (const r of list) (byFile[r.file] = byFile[r.file] || []).push(r);
+    for (const r of list) { const f = r.file || ''; (byFile[f] = byFile[f] || []).push(r); }
     const blocks = Object.entries(byFile).map(([file, routes], i) => {
       const fileId = 'fl-' + i; // 用索引做 id，避免文件路径转义后碰撞
       const items = routes.map(r => {
-        const nm = r.handler.split('@').pop();
+        const nm = (r.handler || '').split('@').pop() || '';
         return `<div class="hit" data-symbol="${escAttrFn(nm)}" data-name="${escAttrFn(nm)}" data-file="${escAttrFn(file)}">
           <div class="row1">${badge('route')}<span class="nm" title="${escAttrFn(r.method + ' ' + r.url + ' → ' + r.handler)}">${escFn(r.method)} ${escFn(r.url)} → ${escFn(r.handler)}</span><span class="trace-btn" title="点击=向下展开该路由方法的全部链路 · Shift+点击=向上">⧉ 链路</span></div>
           <div class="meta" title="${escAttrFn(file + ':' + r.line)}">${escFn(file)}:${r.line}</div>
@@ -1404,11 +1422,12 @@ async function showRouteList() {
     $('#resultsBody').onclick = (e) => {
       const h = /** @type {HTMLElement|null} */ (closestEl(e, '.route-file'));
       if (!h) return;
-      const body = document.getElementById('fl-' + h.dataset.toggle);
+      const body = document.getElementById('fl-' + ds(h, 'toggle'));
       if (!body) return;
       const collapsed = body.style.display === 'none';
       body.style.display = collapsed ? '' : 'none';
-      h.querySelector('.arr').textContent = collapsed ? '▼' : '▶';
+      const arr = h.querySelector('.arr');
+      if (arr) arr.textContent = collapsed ? '▼' : '▶';
     };
     updateHeaderInfo(`接口列表：${list.length} 条路由`);
     clearLoading();
@@ -1432,7 +1451,7 @@ function renderFiles() {
        </div>`).join('')
     : '<div class="hit">没有匹配的文件</div>')
     + (more > 0 ? `<div class="file-more">显示更多（还有 ${more} 个）</div>` : '');
-  /** @type {HTMLElement[]} */ ([...$('#fileList').querySelectorAll('.file')]).forEach(el => el.onclick = () => toggleFileSymbols(el, el.dataset.path));
+  /** @type {HTMLElement[]} */ ([...$('#fileList').querySelectorAll('.file')]).forEach(el => el.onclick = () => toggleFileSymbols(el, ds(el, 'path')));
   const moreEl = /** @type {HTMLElement|null} */ ($('#fileList').querySelector('.file-more'));
   if (moreEl) moreEl.onclick = () => { fileListLimit += FILE_PAGE; renderFiles(); };
   updateHeaderInfo(`共 ${allFiles.length} 个文件 · 显示 ${list.length} 个`);
@@ -1470,7 +1489,7 @@ async function toggleFileSymbols(rowEl, file) {
       : '<div class="hit" style="cursor:default">该文件没有可识别的符号</div>';
     bindHits(box);
   } catch (e) {
-    box.innerHTML = `<div class="hit" style="cursor:default">加载失败：${esc(e.message)}</div>`;
+    box.innerHTML = `<div class="hit" style="cursor:default">加载失败：${esc(errMsg(e))}</div>`;
   }
 }
 
@@ -1537,7 +1556,7 @@ function renderProjects() {
     </div>`;
   }).join('') : '<div class="project-empty">暂无保存的项目，请添加 cgv view 地址。</div>';
   /** @type {HTMLElement[]} */ ([...$('#projectList').querySelectorAll('.project-open')]).forEach(el => el.onclick = () => {
-    const p = loadProjects()[Number(el.dataset.i)];
+    const p = loadProjects()[Number(ds(el, 'i'))];
     if (!p) return;
     const target = normalizedProjectUrl(p.url);
     if (!target) return notice('项目地址无效');
@@ -1545,7 +1564,7 @@ function renderProjects() {
   });
   /** @type {HTMLElement[]} */ ([...$('#projectList').querySelectorAll('.project-delete')]).forEach(el => el.onclick = () => {
     const list = loadProjects();
-    list.splice(Number(el.dataset.i), 1);
+    list.splice(Number(ds(el, 'i')), 1);
     saveProjects(list);
     renderProjects();
   });
@@ -1597,7 +1616,7 @@ function renderCommands() {
     ? list.map((c, i) => `<div class="command-item${i === commandIndex ? ' active' : ''}" data-id="${c.id}"><span>${esc(c.label)}</span>${c.key ? `<kbd>${esc(c.key)}</kbd>` : ''}</div>`).join('')
     : '<div class="command-item" style="cursor:default;color:var(--text-3)">没有匹配的命令</div>';
   /** @type {HTMLElement[]} */ ([...commandList.querySelectorAll('.command-item[data-id]')]).forEach(el => {
-    el.onclick = () => executeCommand(el.dataset.id);
+    el.onclick = () => executeCommand(ds(el, 'id'));
   });
   const active = commandList.querySelector('.command-item.active');
   if (active) active.scrollIntoView({ block: 'nearest' });
@@ -1687,7 +1706,7 @@ async function locateStack() {
     </div>`;
   }).join('');
   /** @type {HTMLElement[]} */ ([...out.querySelectorAll('.stack-frame')]).forEach(el => el.onclick = () => {
-    const m = matches[Number(el.dataset.i)];
+    const m = matches[Number(ds(el, 'i'))];
     if (!m.symbol) { notice(`未找到 ${m.file}:${m.line} 对应的符号`); return; }
     closeStack();
     startGraph(m.symbol.name, m.symbol.name, m.file);
@@ -1814,7 +1833,7 @@ document.addEventListener('click', () => document.querySelectorAll('.optPop.show
 const EXPORTERS = { svg: exportSVG, png: exportPNG, json: exportJSON, mermaid: exportMermaid };
 /** @type {HTMLElement[]} */ ([...$('#exportMenu').querySelectorAll('button')]).forEach(b => b.onclick = () => {
   $('#exportMenu').classList.remove('show');
-  const fn = EXPORTERS[b.dataset.fmt || ''];
+  const fn = EXPORTERS[ds(b, 'fmt') || ''];
   if (fn) fn();
 });
 /** @param {Blob} blob @param {string} filename */
@@ -1839,7 +1858,7 @@ function collectPageCSS() {
   return css;
 }
 function buildSVGString() {
-  const svgEl = document.getElementById('svg');
+  const svgEl = /** @type {SvgEl} */ (document.querySelector('#svg'));
   const w = svgEl.clientWidth, h = svgEl.clientHeight;
   const clone = /** @type {SVGSVGElement} */ (svgEl.cloneNode(true));
   clone.setAttribute('width', String(w));
@@ -1870,6 +1889,7 @@ function exportPNG() {
     canvas.width = w * scale;
     canvas.height = h * scale;
     const ctx = canvas.getContext('2d');
+    if (!ctx) return;
     ctx.fillStyle = getComputedStyle(document.body).backgroundColor || '#0b0f17';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -1918,7 +1938,7 @@ $('#btnReindex').onclick = async () => {
     try { localStorage.removeItem('cgv-stale-dismissed'); } catch (e) { /* 忽略 */ }
     notice(data.message || '索引已更新');
   } catch (e) {
-    notice('重新索引失败：' + e.message);
+    notice('重新索引失败：' + errMsg(e));
   } finally {
     clearLoading();
   }
@@ -1964,14 +1984,12 @@ function reachableSet(key) {
   const seen = new Set([key]);
   // 上游：谁调用了它（callers 方向）
   const upQ = [key];
-  while (upQ.length) {
-    const u = upQ.shift();
+  for (let u = upQ.shift(); u !== undefined; u = upQ.shift()) {
     for (const v of callersOf(u)) if (!seen.has(v)) { seen.add(v); upQ.push(v); }
   }
   // 下游：它调用了谁（callees 方向）
   const downQ = [key];
-  while (downQ.length) {
-    const u = downQ.shift();
+  for (let u = downQ.shift(); u !== undefined; u = downQ.shift()) {
     for (const v of calleesOf(u)) if (!seen.has(v)) { seen.add(v); downQ.push(v); }
   }
   return seen;
@@ -1982,10 +2000,10 @@ function applyChainHighlight(key) {
   if (!key) { clearChainHighlight(); return; }
   const set = reachableSet(key);
   /** @type {SVGElement[]} */ ([...document.querySelectorAll('#viewport .node')]).forEach(el => {
-    el.style.opacity = set.has(el.dataset.key) ? '1' : '0.15';
+    el.style.opacity = set.has(ds(el, 'key')) ? '1' : '0.15';
   });
   /** @type {SVGElement[]} */ ([...document.querySelectorAll('#viewport .edge')]).forEach(el => {
-    el.style.opacity = (set.has(el.dataset.a) && set.has(el.dataset.b)) ? '1' : '0.15';
+    el.style.opacity = (set.has(ds(el, 'a')) && set.has(ds(el, 'b'))) ? '1' : '0.15';
   });
 }
 // 清除高亮：边恢复默认，节点按关键字高亮规则重放
@@ -1998,15 +2016,15 @@ function applyHighlight() {
   const kw = highlightKW.trim().toLowerCase();
   /** @type {SVGElement[]} */ ([...document.querySelectorAll('#viewport .node')]).forEach(el => {
     // 用原始 label 匹配（data-key 取回），不受显示截断影响
-    const node = graph.nodes.get(el.dataset.key);
+    const node = graph.nodes.get(ds(el, 'key'));
     const label = ((node && node.label) || el.querySelector('text')?.textContent || '').toLowerCase();
     el.style.opacity = (!kw || label.includes(kw)) ? '1' : '0.2';
   });
 }
 // ===== 节点 Tooltip：悬停显示限定名、文件行号与高亮代码片段（/api/source，防抖 + 缓存） =====
 const nodeTip = $('#nodeTip');
-/** @type {ReturnType<typeof setTimeout>|null} */
-let tipTimer = null;
+/** @type {ReturnType<typeof setTimeout>|undefined} */
+let tipTimer;
 /** @type {string|null} 当前浮层对应的节点 key（同一节点内移动只刷新位置，不重建内容） */
 let tipKey = null;
 /** @type {Map<string, SourceResponse>} file:line -> /api/source 结果，避免快速扫过时打爆接口 */
@@ -2033,21 +2051,25 @@ function showTip(key, el) {
     nodeTip.innerHTML = `${kind}<div class="tip-name">${esc(node.label)}</div>${file}<pre class="tip-code"><span class="tip-loading">⏳ 加载代码片段…</span></pre>`;
     nodeTip.style.display = 'block';
     const cacheKey = (node.file || '') + ':' + (node.line || 0);
-    if (!node.file || !node.line) nodeTip.querySelector('.tip-code').innerHTML = '<span class="tip-empty">（无源码信息）</span>';
-    else if (tipCache.has(cacheKey)) renderTipCode(node, tipCache.get(cacheKey));
+    const cached = tipCache.get(cacheKey);
+    if (!node.file || !node.line) tipCodeEl().innerHTML = '<span class="tip-empty">（无源码信息）</span>';
+    else if (cached) renderTipCode(node, cached);
     else tipTimer = setTimeout(async () => { // 防抖：短暂停留才拉取
       try {
         const data = /** @type {SourceResponse} */ (await api('/source', { file: node.file || '', line: String(node.line || 1) }));
         tipCache.set(cacheKey, data);
         if (hoverKey === key) { renderTipCode(node, data); tipPosition(el); }
-      } catch { if (hoverKey === key) nodeTip.querySelector('.tip-code').innerHTML = '<span class="tip-empty">（加载失败）</span>'; }
+      } catch { if (hoverKey === key) tipCodeEl().innerHTML = '<span class="tip-empty">（加载失败）</span>'; }
     }, 180);
   }
   tipPosition(el);
 }
+/** 浮层里的代码块容器（渲染时一定存在，按存在处理） @returns {HTMLElement} */
+function tipCodeEl() { return /** @type {HTMLElement} */ (nodeTip.querySelector('.tip-code')); }
+
 /** @param {GNode} node @param {SourceResponse} data */
 function renderTipCode(node, data) {
-  const pre = nodeTip.querySelector('.tip-code');
+  const pre = tipCodeEl();
   if (!data || !data.snippet) { pre.innerHTML = '<span class="tip-empty">（无源码片段）</span>'; return; }
   const start = data.start || 1;
   pre.innerHTML = data.snippet.split('\n').map((ln, i) => {
@@ -2082,8 +2104,8 @@ function hideTip() {
 // 优先 hover：鼠标在节点上时显示该节点全链路；移开后若有点击固定高亮则恢复之，否则清除。
 // 注意：click 不走委托——mkNode 的 onclick 里 e.stopPropagation() 会拦截冒泡，故在 onclick 内直接设 clickKey。
 // tooltip 可交互：离开节点后延迟收起，鼠标可移入代码块复制/滚动
-/** @type {ReturnType<typeof setTimeout>|null} */
-let leaveNodeTimer = null;
+/** @type {ReturnType<typeof setTimeout>|undefined} */
+let leaveNodeTimer;
 function scheduleLeaveNode() {
   clearTimeout(leaveNodeTimer);
   leaveNodeTimer = setTimeout(() => {
@@ -2096,10 +2118,10 @@ function scheduleLeaveNode() {
 viewport.addEventListener('mouseover', (e) => {
   if (dragNode) return; // 拖动卡片时不触发悬停
   const n = /** @type {SVGElement|null} */ (closestEl(e, '.node'));
-  if (n && n.dataset.key) {
+  if (n && ds(n, 'key')) {
     clearTimeout(leaveNodeTimer);
-    if (hoverKey !== n.dataset.key) { hoverKey = n.dataset.key; applyChainHighlight(n.dataset.key); }
-    showTip(n.dataset.key, n);
+    if (hoverKey !== ds(n, 'key')) { hoverKey = ds(n, 'key'); applyChainHighlight(ds(n, 'key')); }
+    showTip(ds(n, 'key'), n);
   }
 });
 viewport.addEventListener('mouseout', (e) => {

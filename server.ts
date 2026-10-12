@@ -16,6 +16,7 @@ import { createRouteParser, matchRoute } from './lib/routes.ts';
 import { createUrlMapper } from './lib/urlmap.ts';
 import { createSymbolResolver } from './lib/sourcecalls.ts';
 import { traceChain } from './lib/trace.ts';
+import { errMsg } from './lib/err.ts';
 import type { SymbolNode, QueryRow, NeighborsPayload } from './lib/textparse.ts';
 import type { TraceResult } from './lib/trace.ts';
 
@@ -101,7 +102,7 @@ async function resolveBareFunc(name: string): Promise<SymbolNode | null> {
   const list: QueryRow[] = parseJson(out, []);
   const hit = list.find(r => r.node && r.node.name === name && /func|method/.test(r.node.kind || ''))
     || list.find(r => r.node && /func|method/.test(r.node.kind || ''));
-  return hit ? { name: hit.node.name, filePath: hit.node.filePath, startLine: hit.node.startLine, kind: hit.node.kind } : null;
+  return hit && hit.node ? { name: hit.node.name, filePath: hit.node.filePath, startLine: hit.node.startLine, kind: hit.node.kind } : null;
 }
 
 const normPath = (p: unknown): string => String(p || '').replace(/\\/g, '/');
@@ -299,7 +300,7 @@ setImmediate(() => {
   hashBaselineReady = true;
   console.log(`[watch] 哈希基线就绪：${fileHashes.size} 个源码文件，耗时 ${Date.now() - t0}ms`);});
 try {
-  let debounce: ReturnType<typeof setTimeout> | null = null;
+  let debounce: ReturnType<typeof setTimeout> | undefined;
   watch(ROOT, { recursive: true }, (event, filename) => {
     if (!filename || indexStale || reindexState.running) return;
     // 只有源码文件变更才提示过期——日志/缓存/IDE 文件变更不该惊动用户
@@ -352,7 +353,7 @@ function findRoute(method: string, path: string): RouteDef | null {
 }
 
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://x');
+  const url = new URL(req.url || '/', 'http://x');
   const path = url.pathname;
   try {
     const route = findRoute(req.method || 'GET', path);
@@ -375,7 +376,7 @@ const server = createServer(async (req, res) => {
       if (cached) return json(req, res, 200, cached);
       // 搜索放宽超时并允许重试一次：大项目首次 query 要冷启动 codegraph，30s 不够
       const out = await run(['query', q, '--json', '-l', useRegex ? '200' : '40'], { timeout: 60000, retries: 1 });
-      let list: SymbolNode[] = parseJson(out, []).map((r: QueryRow) => r.node);
+      let list = parseJson<QueryRow[]>(out, []).map(r => r.node).filter((n): n is SymbolNode => !!n);
       // 去重：同一文件内重载/重写的同名符号只保留一个
       const seen = new Set<string>();
       list = list.filter(h => {
@@ -388,7 +389,7 @@ const server = createServer(async (req, res) => {
       if (useRegex || (list.length < 3 && q.length > 2)) {
         try {
           const wide = await run(['query', q, '--json', '-l', useRegex ? '500' : '200']);
-          for (const r of parseJson(wide, [])) {
+          for (const r of parseJson<QueryRow[]>(wide, [])) {
             const n = r && r.node;
             if (!n) continue;
             const name = n.name || '';
@@ -463,15 +464,15 @@ const server = createServer(async (req, res) => {
       const sym = safeArg(url.searchParams.get('symbol'));
       if (!sym) return json(req, res, 400, { error: 'missing ?symbol=' });
       const file = safeFile((url.searchParams.get('file') || '').trim());
-      const short = sym.split(/::|\\/).pop();
+      const short = sym.split(/::|\\/).pop() || sym;
       const queries = [...new Set([sym, short])];
       const found = new Map();
       for (const q of queries) {
         try {
-          const list = parseJson(await run(['query', q, '--json', '-l', '200']), []);
+          const list = parseJson<QueryRow[]>(await run(['query', q, '--json', '-l', '200']), []);
           for (const row of list) {
             const n = row && row.node;
-            if (!n || !n.name || !['class', 'method', 'function', 'interface'].includes(n.kind)) continue;
+            if (!n || !n.name || !['class', 'method', 'function', 'interface'].includes(n.kind || '')) continue;
             if (file && n.filePath === file && n.name === short) continue;
             const text = `${n.name} ${n.qualifiedName || ''}`.toLowerCase();
             if (!text.includes(short.toLowerCase())) continue;
@@ -533,7 +534,7 @@ const server = createServer(async (req, res) => {
         const m = String(out).match(/indexed|symbols|done|完成/i);
         return json(req, res, 200, { ok: true, message: m ? m[0] : '索引已重建' });
       } catch (e) {
-        return json(req, res, 500, { error: '重新索引失败：' + ((e && e.message) || e) });
+        return json(req, res, 500, { error: '重新索引失败：' + errMsg(e) });
       } finally {
         reindexState.running = false;
       }
@@ -578,7 +579,7 @@ const server = createServer(async (req, res) => {
         if (!result.cancelled) cacheSet(traceCache, tkey, result, 50);
         send('result', result);
       } catch (e) {
-        send('error', { error: String((e && e.message) || e) });
+        send('error', { error: errMsg(e) });
       }
       if (!closed) res.end();
       return;
@@ -608,7 +609,7 @@ const server = createServer(async (req, res) => {
         const end = Math.min(lines.length, line + 8);
         return json(req, res, 200, { file, line, start, end, total: lines.length, snippet: lines.slice(start - 1, end).join('\n') });
       } catch (e) {
-        return json(req, res, 500, { error: '读取失败：' + ((e && e.message) || e) });
+        return json(req, res, 500, { error: '读取失败：' + errMsg(e) });
       }
     }
     // 文件列表（30s 缓存）
@@ -640,14 +641,14 @@ const server = createServer(async (req, res) => {
       return json(req, res, 404, { error: 'not found' });
     }
   } catch (e) {
-    json(req, res, 500, { error: String((e && e.message) || e) });
+    json(req, res, 500, { error: errMsg(e) });
   }
 });
 server.on('error', (e: NodeJS.ErrnoException) => {
   if (e && e.code === 'EADDRINUSE') {
     console.log(`[错误] 端口 ${PORT} 已被占用，换个端口重试，例如: cgv view ${PORT + 1}`);
   } else {
-    console.log('[错误] 服务启动失败:', (e && e.message) || e);
+    console.log('[错误] 服务启动失败:', errMsg(e));
   }
   process.exit(1);
 });
@@ -667,6 +668,6 @@ server.listen(PORT, HOST, async () => {
     const v = (await run(['--version'], { timeout: 10000 })).trim().split('\n')[0];
     if (v && !JSON_OUT) console.log(`codegraph: ${v}${useBundled ? ' (bundled)' : ' (PATH)'}`);
   } catch (e) {
-    if (!JSON_OUT) console.log('[警告] codegraph 不可用：' + ((e && e.message) || e) + '，搜索/调用图将失败');
+    if (!JSON_OUT) console.log('[警告] codegraph 不可用：' + errMsg(e) + '，搜索/调用图将失败');
   }
 });

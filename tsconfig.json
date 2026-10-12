@@ -20,11 +20,10 @@
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
 
-    // noImplicitAny 已开：全仓库（含前端 app.js 的 checkJs、测试与 DOM 替身）不允许隐式 any，
-    // 也不再有显式 any。仍关 strict（strictNullChecks off）——逐个梳理可空性是下一阶段的事，
-    // 它不影响「参数个数 / 属性名 / 形状对不上」这类真错。
-    "strict": false,
-    "noImplicitAny": true,
+    // 全量 strict：无隐式 any、无显式 any，strictNullChecks / useUnknownInCatchVariables 也全开。
+    // 可空性已在全仓库梳理过：能加守卫的加守卫，必要的断言集中在少数几处并注明理由
+    // （如 $canvas / ds() —— 「渲染时自己写上去的属性按存在处理」）。
+    "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": false,
     "skipLibCheck": true,

@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseJson } from './textparse.ts';
-import type { SymbolNode } from './textparse.ts';
+import type { SymbolNode, QueryRow } from './textparse.ts';
 import type { Runner } from './proc.ts';
 
 /** 源码里推断出的一次调用：目标类名（可能是短名）+ 方法名 */
@@ -109,11 +109,12 @@ export function createSymbolResolver({ run, root = null, cap = 2000 }: {
       return v;
     }
     const out = await run(['query', q, '--json', '-l', '10']);
-    const list = parseJson(out, []);
-    let hit = list.find((r: { node?: SymbolNode }) => r.node && r.node.qualifiedName === q);
-    if (!hit) hit = list.find((r: { node?: SymbolNode }) => r.node && r.node.qualifiedName === q.replace(/\\/g, '::'));
-    if (!hit) hit = list.find((r: { node?: SymbolNode }) => r.node && r.node.qualifiedName!.endsWith('::' + short + '::' + method));
-    const sym: SymbolNode | null = hit ? { name: hit.node.name || method, filePath: hit.node.filePath, startLine: hit.node.startLine, kind: hit.node.kind } : null;
+    const list = parseJson<QueryRow[]>(out, []);
+    let hit = list.find(r => r.node && r.node.qualifiedName === q);
+    if (!hit) hit = list.find(r => r.node && r.node.qualifiedName === q.replace(/\\/g, '::'));
+    if (!hit) hit = list.find(r => r.node && (r.node.qualifiedName || '').endsWith('::' + short + '::' + method));
+    const node = hit && hit.node;
+    const sym: SymbolNode | null = node ? { name: node.name || method, filePath: node.filePath, startLine: node.startLine, kind: node.kind } : null;
     if (cache.size >= cap) cache.delete(cache.keys().next().value!); // 淘汰最久未用
     cache.set(q, sym);
     return sym;

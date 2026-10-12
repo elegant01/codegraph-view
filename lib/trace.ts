@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseJson, parseTrail, parseNodeKind, extractSource, isImportRef, warnIfFormatDrift } from './textparse.ts';
 import type { SymbolNode, NeighborsPayload } from './textparse.ts';
+import { errMsg } from './err.ts';
 import type { Runner } from './proc.ts';
 import type { SymbolResolver } from './sourcecalls.ts';
 
@@ -120,34 +121,34 @@ export async function traceChain(ctx: TraceContext, sym: string, file: string | 
     const batch = queue.splice(0, CONCURRENCY);
     const settled = await Promise.all(batch.map(async (item) => {
       try { return { item, ...(await fetchNeighbors(item.name, item.file)) }; }
-      catch (e) { return { item, raw: '', neighbors: [] as SymbolNode[], kind: null as string | null, error: String((e && e.message) || e) }; }
+      catch (e) { return { item, raw: '', neighbors: [] as SymbolNode[], kind: null as string | null, error: errMsg(e) }; }
     }));
     for (const r of settled) {
       if (r.item.idx === rootIdx) rootRaw = r.raw;
       if (r.kind) nodes[r.item.idx].kind = r.kind;
       // 查询失败（r.error）的节点邻居为空，自然留作叶子，不阻塞链路
       for (const c of r.neighbors || []) {
-        const ci = addNode(c.name, c.filePath, c.kind || null, c.startLine);
+        const ci = addNode(c.name, c.filePath || null, c.kind || null, c.startLine ?? null);
         // 边方向始终表达「调用 → 被调」：向下时当前节点→邻居；向上时邻居→当前节点
         edges.push(up ? [ci, r.item.idx] : [r.item.idx, ci]);
         actualDepth = Math.max(actualDepth, r.item.d + 1);
         const k = keyOf(c.name, c.filePath);
         if (!visited.has(k) && c.filePath) {
           visited.add(k);
-          if (nodes.length > maxNodes) { truncated = true; break; }
-          if (r.item.d + 1 >= depth) continue; // 达到深度上限，留作可点击叶子
+          if (maxNodes !== undefined && nodes.length > maxNodes) { truncated = true; break; }
+          if (depth !== undefined && r.item.d + 1 >= depth) continue; // 达到深度上限，留作可点击叶子
           queue.push({ idx: ci, name: c.name, file: c.filePath, d: r.item.d + 1 });
         }
       }
     }
-    if (nodes.length > maxNodes) { truncated = true; break; }
+    if (maxNodes !== undefined && nodes.length > maxNodes) { truncated = true; break; }
     if (onProgress) onProgress({ nodes: nodes.length, edges: edges.length });
   }
 
   const keepIdx = new Map<number, number>();
   const kept: TraceNode[] = [];
   nodes.forEach((n, i) => {
-    if (SKIP_KINDS.has(n.kind) && i !== rootIdx) return;
+    if (n.kind && SKIP_KINDS.has(n.kind) && i !== rootIdx) return;
     keepIdx.set(i, kept.length);
     kept.push(n);
   });

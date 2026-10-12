@@ -130,7 +130,7 @@ test('GET /api/search 在 codegraph 不可用时快速失败（不挂起）', as
     assert.ok([200, 500].includes(res.status), '实际: ' + res.status);
     if (res.status === 200) assert.ok(Array.isArray(await res.json()));
   } catch (e) {
-    if (e.name === 'AbortError') assert.fail('/api/search 150s 未响应，疑似挂起');
+    if (e instanceof Error && e.name === 'AbortError') assert.fail('/api/search 150s 未响应，疑似挂起');
     throw e;
   } finally { clearTimeout(t); }
 });

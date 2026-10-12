@@ -103,8 +103,8 @@ export function createRouteParser({ root, run, ttlMs = 300000 }: {
     const now = Date.now();
     if (cache.key === root && cache.list && now - cache.at < ttlMs) return cache.list;
     const out = await run(['files', '--json']);
-    const files = parseJson(out, []);
-    const routeFiles = files.filter((f: { path?: string }) => /(?:^|\/)(?:routes|Routes)\/[^/]+\.php$/.test(f.path || ''));
+    const files = parseJson<Array<{ path: string }>>(out, []);
+    const routeFiles = files.filter(f => /(?:^|\/)(?:routes|Routes)\/[^/]+\.php$/.test(f.path || ''));
     const routes: RouteEntry[] = [];
     for (const f of routeFiles) {
       const filePath = join(root, f.path);
@@ -121,8 +121,8 @@ export function createRouteParser({ root, run, ttlMs = 300000 }: {
     const now = Date.now();
     if (goCache.key === root && goCache.list && now - goCache.at < ttlMs) return goCache.list;
     const out = await run(['files', '--json']);
-    const files = parseJson(out, []);
-    const goFiles = files.filter((f: { path?: string }) => /\.go$/.test(f.path || ''));
+    const files = parseJson<Array<{ path: string }>>(out, []);
+    const goFiles = files.filter(f => /\.go$/.test(f.path || ''));
     // 第一遍：读候选文件，收集 @router 注解控制器（struct 名 → 注解路由）
     const readable: Array<{ path: string; src: string }> = [];
     for (const f of goFiles) {

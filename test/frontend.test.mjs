@@ -96,6 +96,9 @@ StubEventSource.CONNECTING = 0;
 // 记录 EventSource 实例，供 SSE 测试手动派发事件
 /** @type {StubEventSource[]} */
 const esInstances = [];
+/** 取最近一次创建的 EventSource 替身（测试里刚 startTrace 过，必然存在）
+ * @returns {StubEventSource} */
+function lastES() { const e = esInstances[esInstances.length - 1]; assert.ok(e, '应已创建 EventSource'); return e; }
 
 /** 请求记录（断言用） */
 const fetchCalls = /** @type {string[]} */ ([]);
@@ -227,8 +230,11 @@ function buildGraph(edges) {
   const keys = new Map();
   /** @param {string} id @returns {string} */
   const node = (id) => {
-    if (!keys.has(id)) keys.set(id, app.addNode(id, `src/${id}.ts`).key);
-    return keys.get(id);
+    const existing = keys.get(id);
+    if (existing) return existing;
+    const created = app.addNode(id, `src/${id}.ts`).key;
+    keys.set(id, created);
+    return created;
   };
   for (const [a, b] of edges) app.addEdge(node(a), node(b));
   return keys;
@@ -366,7 +372,7 @@ test('nodeBox 宽度钳制在 150–248，高度随入度增长（热点视图�
 test('startTrace：收到 result 立即关闭连接，不会让 EventSource 自动重连', () => {
   esInstances.length = 0;
   app.startTrace('getItemList', 'getItemList', 'src/a.ts', 'down');
-  const es = esInstances.at(-1);
+  const es = lastES();
   assert.ok(es, '应创建 EventSource');
   assert.match(es.url, /^\/api\/trace\/stream\?/);
   // direction=down 是服务端默认值，前端不显式传；up 才带参数（见下一个测试）
@@ -379,11 +385,11 @@ test('startTrace：收到 result 立即关闭连接，不会让 EventSource 自�
 test('startTrace：连接级 error 也关闭连接，且 settled 保证只处理一次', () => {
   esInstances.length = 0;
   app.startTrace('foo', 'foo', 'src/f.ts', 'down');
-  const es = esInstances.at(-1);
+  const es = lastES();
   es.readyState = StubEventSource.CLOSED;
   es.emit('error');
   assert.equal(es.closed, true, '连接中断后应关闭，避免自动重连重复跑链路');
-  const events = es.listeners.get('error').length;
+  const events = (es.listeners.get('error') || []).length;
   assert.equal(events, 1);
   // 再补一个 result（异常时序）不应改变状态：settled 已置位
   es.emit('result', { nodes: [], edges: [] });
@@ -393,7 +399,7 @@ test('startTrace：连接级 error 也关闭连接，且 settled 保证只处理
 test('cancelTrace 关闭进行中的 EventSource', () => {
   esInstances.length = 0;
   app.startTrace('bar', 'bar', 'src/b.ts', 'up');
-  const es = esInstances.at(-1);
+  const es = lastES();
   assert.match(es.url, /direction=up/, '向上展开应显式传 direction=up');
   assert.equal(es.closed, false);
   app.cancelTrace(true);
