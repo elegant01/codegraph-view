@@ -10,6 +10,7 @@ const PKG = dirname(fileURLToPath(import.meta.url)) + '/..';
 const PORT = 39771; // 独立端口，避免与开发实例冲突
 const BASE = `http://127.0.0.1:${PORT}`;
 
+/** @type {import('node:child_process').ChildProcess | null} */
 let child = null;
 async function startServer() {
   child = spawn(process.execPath, [join(PKG, 'server.ts'), String(PORT)], { cwd: PKG, stdio: 'ignore' });

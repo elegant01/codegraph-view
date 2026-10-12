@@ -27,52 +27,65 @@ const EXPORTS = [
   'startTrace', 'cancelTrace',
 ];
 
+// 元素替身：只实现 app.js 真正调用到的成员。这里是测试替身、不是 DOM 实现，
+// 所以按「够 app.js 用」的形状给类型，最后一次性断言成 HTMLElement（测试替身不做完整 DOM 建模）。
 function makeCtxStub() {
   const ctx2d = {
     clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillRect() {}, strokeRect() {},
     fillStyle: '', strokeStyle: '', lineWidth: 1,
   };
   const el = {
-    style: { setProperty() {}, removeProperty() {} },
-    dataset: {},
+    style: { setProperty: (/** @type {string} */ k, /** @type {string} */ v) => { void k; void v; }, removeProperty: (/** @type {string} */ k) => { void k; } },
+    dataset: /** @type {Record<string, string>} */ ({}),
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     addEventListener() {}, removeEventListener() {},
-    setAttribute() {}, getAttribute() { return null; }, removeAttribute() {},
+    setAttribute() {},
+    /** @returns {string|null} */
+    getAttribute() { return null; },
+    removeAttribute() {},
     appendChild() {}, insertBefore() {}, remove() {}, after() {},
-    querySelector() { return makeEl(); }, querySelectorAll() { return []; },
-    getBoundingClientRect() { return { x: 0, y: 0, width: 800, height: 600, top: 0, left: 0, right: 800, bottom: 600 }; },
+    /** @returns {Element|null} */
+    querySelector() { return makeEl(); },
+    /** @returns {Element[]} */
+    querySelectorAll() { return []; },
+    /** @returns {DOMRect} */
+    getBoundingClientRect() { return /** @type {DOMRect} */ ({ x: 0, y: 0, width: 800, height: 600, top: 0, left: 0, right: 800, bottom: 600 }); },
+    /** @returns {unknown} */
     getScreenCTM() { return null; },
+    /** @returns {Element} */
     cloneNode() { return makeEl(); },
-    getContext() { return ctx2d; },
+    /** @returns {CanvasRenderingContext2D} */
+    getContext() { return /** @type {CanvasRenderingContext2D} */ (/** @type {unknown} */ (ctx2d)); },
     focus() {}, blur() {}, select() {}, scrollIntoView() {}, click() {},
     textContent: '', innerHTML: '', value: '', checked: false,
     width: 168, height: 118, clientWidth: 800, clientHeight: 600, offsetWidth: 100, offsetHeight: 60,
     title: '', href: '', download: '',
-    firstChild: null, nextElementSibling: null, parentNode: null,
+    firstChild: /** @type {Node|null} */ (null),
+    nextElementSibling: /** @type {Element|null} */ (null),
   };
   return el;
 }
-function makeEl() { return makeCtxStub(); }
+/** @returns {HTMLElement} */
+function makeEl() { return /** @type {HTMLElement} */ (/** @type {unknown} */ (makeCtxStub())); }
 
-const documentEl = makeEl();
-
-// 记录 EventSource 实例，供 SSE 测试手动派发事件
-const esInstances = [];
+/** 事件源替身：记录监听器，供测试手动派发 */
 class StubEventSource {
+  /** @param {string} url */
   constructor(url) {
     this.url = url;
     this.readyState = 1; // OPEN
     this.closed = false;
-    this.retried = 0;
+    /** @type {Map<string, Array<(e: { data?: string }) => void>>} */
     this.listeners = new Map();
     esInstances.push(this);
   }
+  /** @param {string} type @param {(e: { data?: string }) => void} fn */
   addEventListener(type, fn) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
-    this.listeners.get(type).push(fn);
+    /** @type {Array<(e: { data?: string }) => void>} */ (this.listeners.get(type)).push(fn);
   }
   close() { this.closed = true; this.readyState = 2; }
-  // 测试用：派发一个事件
+  /** 测试用：派发一个事件 @param {string} type @param {unknown} [data] */
   emit(type, data) {
     for (const fn of this.listeners.get(type) || []) fn(data === undefined ? {} : { data: JSON.stringify(data) });
   }
@@ -80,35 +93,66 @@ class StubEventSource {
 StubEventSource.CLOSED = 2;
 StubEventSource.CONNECTING = 0;
 
-const fetchCalls = [];
+// 记录 EventSource 实例，供 SSE 测试手动派发事件
+/** @type {StubEventSource[]} */
+const esInstances = [];
+
+/** 请求记录（断言用） */
+const fetchCalls = /** @type {string[]} */ ([]);
+/** @param {string} url @returns {Promise<{ ok: boolean, status: number, json: () => Promise<unknown> }>} */
 function stubFetch(url) {
   fetchCalls.push(String(url));
-  const body = String(url).includes('/api/status') ? { root: '/fake/root' } : [];
+  const body = /** @type {unknown} */ (String(url).includes('/api/status') ? { root: '/fake/root' } : []);
   return Promise.resolve({ ok: true, status: 200, json: async () => body });
 }
 
+// 只实现 app.js 用到的少数 Web API；vm 上下文没有这些全局，必须显式注入
+class StubBlob { constructor() {} }
+class StubImage { constructor() { this.onload = null; this.onerror = null; } }
+class StubDOMPoint {
+  /** @param {number} x @param {number} y */
+  constructor(x, y) { this.x = x; this.y = y; }
+}
+class StubXMLSerializer { serializeToString() { return ''; } }
+
+/** documentElement 替身（主题初始化会读它的 data-theme） */
+const documentEl = makeEl();
+
+/** @returns {Record<string, unknown>} */
 function makeSandbox() {
-  const sandbox = {
+  const locationStub = { hash: '', href: 'http://127.0.0.1:3999/', pathname: '/', origin: 'http://127.0.0.1:3999' };
+  const localStorageStub = {
+    getItem: () => /** @type {string|null} */ (null),
+    setItem: (/** @type {string} */ k, /** @type {string} */ v) => { void k; void v; },
+    removeItem: (/** @type {string} */ k) => { void k; },
+  };
+  /** @type {Record<string, unknown>} */
+  const documentStub = {
+    /** @returns {Element|null} */
+    querySelector: () => makeEl(),
+    /** @returns {Element[]} */
+    querySelectorAll: () => [],
+    getElementById: () => makeEl(),
+    createElement: () => makeEl(),
+    createElementNS: () => makeEl(),
+    addEventListener() {},
+    documentElement: documentEl,
+    body: makeEl(),
+    styleSheets: [],
+  };
+  return {
     console,
-    document: {
-      querySelector: () => makeEl(),
-      querySelectorAll: () => [],
-      getElementById: () => makeEl(),
-      createElement: () => makeEl(),
-      createElementNS: () => makeEl(),
-      addEventListener() {},
-      documentElement: documentEl,
-      body: makeEl(),
-      styleSheets: [],
-    },
+    document: documentStub,
     window: {
       addEventListener() {}, innerWidth: 1600, innerHeight: 900, open() {},
       history: { replaceState() {}, pushState() {} },
-      location: { hash: '', href: 'http://127.0.0.1:3999/', pathname: '/', origin: 'http://127.0.0.1:3999' },
+      location: locationStub,
+      document: documentStub,
+      localStorage: localStorageStub,
     },
-    location: { hash: '', href: 'http://127.0.0.1:3999/', pathname: '/', origin: 'http://127.0.0.1:3999' },
+    location: locationStub,
     navigator: { clipboard: { writeText: async () => {} } },
-    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    localStorage: localStorageStub,
     matchMedia: () => ({ matches: false, addEventListener() {} }),
     requestAnimationFrame: () => 0,
     // 定时器一律空实现：避免测试进程被 setInterval / notice 的自动隐藏吊住
@@ -116,21 +160,17 @@ function makeSandbox() {
     clearTimeout: () => {},
     setInterval: () => 0,
     clearInterval: () => {},
-    CSS: { escape: (s) => String(s).replace(/["\\\]]/g, '\\$&') },
+    CSS: { escape: (/** @type {string} */ s) => String(s).replace(/["\\\]]/g, '\\$&') },
     // vm 上下文只有 ECMAScript 内建，Web/Node 全局要显式注入（app.js 用到 URLSearchParams 等）
     URL, URLSearchParams, TextEncoder, TextDecoder,
-    Blob: class { constructor() {} },
-    Image: class { constructor() { this.onload = null; this.onerror = null; } },
-    DOMPoint: class { constructor(x, y) { this.x = x; this.y = y; } },
-    XMLSerializer: class { serializeToString() { return ''; } },
+    Blob: StubBlob,
+    Image: StubImage,
+    DOMPoint: StubDOMPoint,
+    XMLSerializer: StubXMLSerializer,
     fetch: stubFetch,
     EventSource: StubEventSource,
     getComputedStyle: () => ({ backgroundColor: '#000' }),
   };
-  sandbox.window.document = sandbox.document;
-  sandbox.window.localStorage = sandbox.localStorage;
-  sandbox.globalThis = sandbox;
-  return sandbox;
 }
 
 // 载入一次（各测试共用同一份图状态，测试之间用 clearGraphEdges 复位）
@@ -177,12 +217,15 @@ test('edgePath 回边走上方绕行（Q 曲线），且不同 edgeIndex 弧度�
 });
 
 // ===== 图算法 =====
+/** @param {Array<[string, string]>} edges @returns {Map<string, string>} */
 function buildGraph(edges) {
   const g = app.graph;
   g.nodes.clear();
   app.clearGraphEdges();
   app.posOverride.clear();
+  /** @type {Map<string, string>} */
   const keys = new Map();
+  /** @param {string} id @returns {string} */
   const node = (id) => {
     if (!keys.has(id)) keys.set(id, app.addNode(id, `src/${id}.ts`).key);
     return keys.get(id);

@@ -36,11 +36,11 @@ export interface NeighborsPayload {
   callees?: SymbolNode[];
 }
 
-// CLI 在无结果/歧义时输出 "ℹ ..." 提示而非 JSON，容错解析。
-// 返回 any 是有意的：这是不可信的 CLI 边界，调用方各自按需窄化；
-// 想收紧时可改成 unknown 并为每种 --json 形状提供专用解析函数（见 NeighborsPayload）。
-export function parseJson(raw: unknown, fallback: any): any {
-  try { return JSON.parse(String(raw)); } catch { return fallback; }
+// CLI 在无结果/歧义时输出 "ℹ ..." 提示而非 JSON，故容错解析：解析失败返回 fallback。
+// 返回类型由调用方给出 —— 传 `parseJson<QueryRow[]>(out, [])`，或 `parseJson(out, [] as QueryRow[])`；
+// 这样「CLI 输出的形状」在调用处显式声明，而不是靠 any 蒙过去。
+export function parseJson<T>(raw: unknown, fallback: T): T {
+  try { return JSON.parse(String(raw)) as T; } catch { return fallback; }
 }
 
 // 解析 `codegraph node <name> -f <file>` 输出里的 Trail 段：

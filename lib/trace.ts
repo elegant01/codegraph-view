@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseJson, parseTrail, parseNodeKind, extractSource, isImportRef, warnIfFormatDrift } from './textparse.ts';
-import type { SymbolNode } from './textparse.ts';
+import type { SymbolNode, NeighborsPayload } from './textparse.ts';
 import type { Runner } from './proc.ts';
 import type { SymbolResolver } from './sourcecalls.ts';
 
@@ -85,8 +85,9 @@ export async function traceChain(ctx: TraceContext, sym: string, file: string | 
     if (!filePath) {
       const cmd = up ? 'callers' : 'callees';
       const raw = await run([cmd, name, '--json', '-l', '40']);
-      const list: SymbolNode[] = (parseJson(raw, {})[cmd === 'callers' ? 'callers' : 'callees'] || [])
-        .filter((c: SymbolNode) => c.kind !== 'import' && !isImportRef(c.name));
+      const payload = parseJson<NeighborsPayload>(raw, {});
+      const list: SymbolNode[] = (payload[cmd === 'callers' ? 'callers' : 'callees'] || [])
+        .filter((c) => c.kind !== 'import' && !isImportRef(c.name));
       return { raw, neighbors: list, kind: null };
     }
     if (/\.min\.(?:js|ts)$/.test(filePath)) {
@@ -119,7 +120,7 @@ export async function traceChain(ctx: TraceContext, sym: string, file: string | 
     const batch = queue.splice(0, CONCURRENCY);
     const settled = await Promise.all(batch.map(async (item) => {
       try { return { item, ...(await fetchNeighbors(item.name, item.file)) }; }
-      catch (e) { return { item, raw: '', neighbors: [] as SymbolNode[], kind: null, error: String((e && e.message) || e) }; }
+      catch (e) { return { item, raw: '', neighbors: [] as SymbolNode[], kind: null as string | null, error: String((e && e.message) || e) }; }
     }));
     for (const r of settled) {
       if (r.item.idx === rootIdx) rootRaw = r.raw;

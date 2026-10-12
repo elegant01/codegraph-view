@@ -265,8 +265,11 @@ npm run e2e       # 端到端冒烟（对存在的 fixture 项目起服务验证
 
 > 类型检查说明：项目**不需要构建**。后端（`server.ts` / `bin/*.ts` / `lib/*.ts` / `scripts/*.ts`）
 > 是真 TypeScript，前端 `public/app.js` 与测试 `test/*.test.mjs` 由 `checkJs` 覆盖；
-> 工具链只做静态分析、不产出任何文件。DOM 相关的类型断言集中在少数几处。
-> 迁移进度与路线见 `TODO.md` 第十节。
+> 工具链只做静态分析、不产出任何文件。
+> **`noImplicitAny` 已开，且全仓库没有任何 `any`**（显式与隐式都没有）：CLI 输出这一类
+> 不可信边界用泛型 `parseJson<T>(raw, fallback)` + 契约类型（`SymbolNode` / `NeighborsPayload` …）
+> 在调用处声明形状，而不是靠 `any` 蒙过去。`strict` 仍关（`strictNullChecks` off），
+> 逐个梳理可空性是下一阶段。迁移进度与路线见 `TODO.md` 第十节。
 
 ### 为什么后端是 `.ts`？
 

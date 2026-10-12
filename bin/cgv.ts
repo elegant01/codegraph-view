@@ -8,7 +8,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SHIM = join(ROOT, 'node_modules', '@colbymchenry', 'codegraph', 'npm-shim.js');
 const args = process.argv.slice(2);
 
-function run(cmd, cmdArgs) {
+function run(cmd: string, cmdArgs: string[]): void {
   const p = spawn(cmd, cmdArgs, { stdio: 'inherit', windowsHide: true });
   p.on('exit', (code) => process.exit(code ?? 0));
 }

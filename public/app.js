@@ -1,15 +1,54 @@
-const $ = (s) => document.querySelector(s);
-const svg = $('#svg');
-const viewport = $('#viewport');
+// ===== 类型定义（JSDoc，仅用于 tsc --checkJs 静态检查，运行时会被完全忽略）=====
+/** 图上节点坐标（layer 为 BFS 分层，负=调用者侧，正=被调用者侧） @typedef {{ x: number, y: number, layer: number }} Pos */
+/** 节点卡片尺寸 @typedef {{ w: number, h: number }} Box */
+/** SVG viewBox @typedef {{ x: number, y: number, w: number, h: number }} ViewBox */
+/** @typedef {SVGSVGElement} SvgEl @typedef {SVGGElement} GEl @typedef {HTMLCanvasElement} CanvasEl */
+/** 手工拖动位置 key->Pos @typedef {Map<string, Pos>} PosMap */
+/** 一次布局的结果（minimap 与拖动重算连线共用） @typedef {{ pos: Map<string, Pos>, vb: ViewBox, visibleKeys: string[], boxes: Map<string, Box> }} Layout */
+/** 图上的一个符号节点 @typedef {{ key: string, name: string, label: string, query?: string, file: string|null, kind: string|null, line: number|null, repo: string, expanded: boolean }} GNode */
+/** 面包屑 / 历史记录的一项 @typedef {{ symbol: string, file?: string|null, key: string, trace?: boolean, direction?: 'up'|'down' }} HistoryItem */
+/** 展开撤销用的图快照 @typedef {{ nodes: Map<string, GNode>, edges: Set<string>, centerKey: string|null, posOverride: PosMap }} Snapshot */
+/** 后端 `/api/files` 的一项 @typedef {{ path: string, nodeCount: number }} FileItem */
+/** 后端 `/api/repos` 的一项 @typedef {{ name: string, path: string }} RepoInfo */
+/** `/api/status` @typedef {{ stale?: boolean, reindexing?: boolean, staleFile?: string|null, root?: string }} StatusResponse */
+/** 搜索/路由/文件命中的一项 @typedef {{ name: string, qualifiedName?: string, kind?: string, filePath?: string, startLine?: number, method?: string, url?: string, handler?: string, line?: number, path?: string, nodeCount?: number, file?: string }} Hit */
+/** `/api/graph` @typedef {{ symbol?: string, kind?: string|null, line?: number|null, callers?: Hit[], callees?: Hit[], source?: string }} GraphResponse */
+/** 链路节点 @typedef {{ name: string, filePath: string|null, kind: string|null, line?: number|null }} TraceNode */
+/** `/api/trace/stream` 的 result 事件 @typedef {{ symbol?: string, file?: string|null, direction?: 'up'|'down', nodes?: TraceNode[], edges?: Array<[number, number]>, depth?: number, truncated?: boolean, cancelled?: boolean, source?: string }} TraceResponse */
+/** 文件内的一个符号 @typedef {{ name: string, kind: string, line: number }} SymbolItem */
+/** `/api/symbols` @typedef {{ file?: string, symbols?: SymbolItem[], total?: number, truncated?: boolean }} SymbolsResponse */
+/** 堆栈解析出的一帧 @typedef {{ file: string, line: number }} StackFrame */
+/** `/api/source` @typedef {{ file?: string, line?: number, start?: number, end?: number, total?: number, snippet?: string }} SourceResponse */
+/** 节点拖动状态 @typedef {{ key: string, el: SVGElement, startClient: {x:number,y:number}, startGraph: {x:number,y:number}, startPos: {x:number,y:number}, moved: boolean }} DragState */
+/** 路径查找结果 @typedef {{ nodes: string[], edges: string[] }} PathHit */
+/** 右侧源码面板当前内容 @typedef {{ symbol: string, file: string, raw: string }} CurSource */
+/** 项目切换器里保存的一项 @typedef {{ name?: string, url: string }} ProjectItem */
+/** 命令面板里的一条命令 @typedef {{ id: string, label: string, run: () => void, key?: string }} CmdItem */
+
+/** 取单个元素（页面里都是 HTMLElement；canvas/input/svg 等特化元素见 $input/$canvas 或就地断言）
+ * @param {string} s @returns {HTMLElement} */
+const $ = (s) => /** @type {HTMLElement} */ (document.querySelector(s));
+/** 取输入框（.value / .checked / .select / .focus） @param {string} s @returns {HTMLInputElement} */
+const $input = (s) => /** @type {HTMLInputElement} */ (document.querySelector(s));
+/** 取带 value 的表单控件（input / select / textarea） @param {string} s @returns {HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement} */
+const $form = (s) => /** @type {HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement} */ (document.querySelector(s));
+/** 取 canvas @param {string} s @returns {CanvasEl} */
+const $canvas = (s) => /** @type {CanvasEl} */ (document.querySelector(s));
+const svg = /** @type {SvgEl} */ (document.querySelector('#svg'));
+const viewport = /** @type {GEl} */ (document.querySelector('#viewport'));
 const NS = 'http://www.w3.org/2000/svg';
+/** 建 SVG 元素 @param {string} tag @param {Record<string, string|number>} [attrs] @returns {SVGElement} */
 const g = (tag, attrs) => {
   const el = document.createElementNS(NS, tag);
-  for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+  for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, String(v));
   return el;
 };
+/** @type {Record<string, string>} */
 const KIND_LABEL = { function:'函数', method:'方法', class:'类', interface:'接口', type:'类型', property:'属性', variable:'变量', route:'路由' };
+/** @type {Record<string, string>} */
 const KIND_CLASS = { function:'function', method:'method', class:'class', interface:'interface', type:'type', property:'property', variable:'variable', route:'route' };
 // 卡片左侧图标块的字形（Dify 节点风格：彩色圆角方块 + 类型字符）
+/** @type {Record<string, string>} */
 const KIND_GLYPH = { function:'ƒ', method:'M', class:'C', interface:'I', type:'T', property:'P', variable:'V', route:'R' };
 
 // ===== 图数据模型（支持多级展开）=====
@@ -17,19 +56,26 @@ const SEP = '';
 // SEP 是边键 a↔b 的分隔符（字面控制字符，避免与文件路径/符号名冲突），
 // 用 '\x01' 拼 key 再由 indexOf 拆回两端：改动它必须同步检查 addEdge / relayout /
 // drawMinimap / exportJSON / findPath / restoreSnapshot 里的拆分逻辑。
+/** @type {{ nodes: Map<string, GNode>, edges: Set<string>, centerKey: string|null }} */
 const graph = { nodes: new Map(), edges: new Set(), centerKey: null };
+/** @type {HistoryItem[]} */
 const history = [];
-const expandStack = []; // 展开撤销栈：每次点击节点展开前保存图快照
+/** @type {Snapshot[]} 展开撤销栈：每次点击节点展开前保存图快照 */
+const expandStack = [];
+/** @type {FileItem[]} */
 let allFiles = [];
+/** @type {RepoInfo[]} */
 let repoList = [];
 let projectRoot = ''; // 项目根绝对路径（/api/status 提供），把相对 file 补成绝对路径用
+/** @returns {Promise<string>} */
 async function ensureRoot() {
   if (projectRoot) return projectRoot;
-  try { const s = await api('/status'); projectRoot = s.root || ''; } catch { /* 取不到就退回相对路径 */ }
+  try { const s = /** @type {StatusResponse} */ (await api('/status')); projectRoot = s.root || ''; } catch { /* 取不到就退回相对路径 */ }
   return projectRoot;
 }
 // VS Code 的 vscode://file/ 只认绝对路径（Windows 盘符小写更稳），
 // 后端返回的 file 相对项目根，必须拼 root；空格等交给 encodeURI（: 和 / 不会被编码）。
+/** @param {string|null|undefined} file @param {number|null|undefined} line @param {string} root @returns {string} */
 function vscodeUrl(file, line, root) {
   let p = String(file || '').replace(/\\/g, '/');
   if (!/^[A-Za-z]:\//.test(p) && !p.startsWith('/') && root) {
@@ -38,10 +84,13 @@ function vscodeUrl(file, line, root) {
   p = p.replace(/^([A-Za-z]):/, (_, d) => d.toLowerCase() + ':');
   return `vscode://file/${encodeURI(p)}:${line || 1}`;
 }
+/** @type {{ x: number, y: number, k: number }} */
 let viewTransform = { x: 0, y: 0, k: 1 };
+/** @returns {Promise<void>} */
 async function loadRepos() {
-  try { repoList = await api('/repos'); } catch { repoList = []; }
+  try { repoList = /** @type {RepoInfo[]} */ (await api('/repos')); } catch { repoList = []; }
 }
+/** @param {string|null|undefined} file @returns {string} */
 function repoForFile(file) {
   const path = String(file || '').replace(/\\/g, '/').replace(/^\.?\//, '');
   const repo = repoList.find(r => !r.path || path === r.path || path.startsWith(r.path + '/'));
@@ -59,9 +108,11 @@ let renderAllNodes = false; // 大图精简渲染：默认只渲染靠近中心�
 //  - 外部引入目录：external / third_party
 // 注意：不写死具体项目路径（如 src/lib/db），避免在其他语言项目误伤业务代码。
 const NOISE_RE = /(\.min\.(?:js|ts)$|\/node_modules\/|\/vendor\/|\/(?:dist|build|out|target|\.next|\.nuxt)\/|^external\/|\/external\/|\/third_party\/)/;
-function isNoise(node) { return node && node.file && NOISE_RE.test(node.file); }
+/** @param {{ file?: string|null }} node @returns {boolean} */
+function isNoise(node) { return !!(node && node.file && NOISE_RE.test(node.file)); }
 // 某节点是否应显示（中心始终显示；开关关闭时过滤噪音；子图过滤按类型）
 let graphKindFilter = ''; // 当前子图类型过滤（''=全部），来自 #graphKindFilter
+/** @param {string} key @returns {boolean} */
 function shouldShow(key) {
   if (key === graph.centerKey) return true;
   const n = graph.nodes.get(key);
@@ -70,7 +121,9 @@ function shouldShow(key) {
   return showNoise || !isNoise(n);
 }
 
+/** @param {string} name @param {string|null|undefined} file @returns {string} */
 function nodeKey(name, file) { return (file ? file + '::' : '') + name; }
+/** @param {string} name @param {string|null} file @param {string|null} [kind] @param {number|null} [line] @returns {GNode} */
 function addNode(name, file, kind, line) {
   const key = nodeKey(name, file);
   let n = graph.nodes.get(key);
@@ -85,33 +138,46 @@ function addNode(name, file, kind, line) {
   return n;
 }
 // 邻接表：addEdge 时同步维护，callersOf/calleesOf 由 O(n) 全边扫描降为 O(1) 取表
-const adjIn = new Map();  // key -> Set<callerKey>
-const adjOut = new Map(); // key -> Set<calleeKey>
-function adjAdd(map, a, b) { if (!map.has(a)) map.set(a, new Set()); map.get(a).add(b); }
+/** @type {Map<string, Set<string>>} key -> Set<callerKey> */
+const adjIn = new Map();
+/** @type {Map<string, Set<string>>} key -> Set<calleeKey> */
+const adjOut = new Map();
+/** @param {Map<string, Set<string>>} map @param {string} a @param {string} b */
+function adjAdd(map, a, b) { if (!map.has(a)) map.set(a, new Set()); /** @type {Set<string>} */ (map.get(a)).add(b); }
+/** @param {string} aKey @param {string} bKey */
 function addEdge(aKey, bKey) {
   if (aKey === bKey || graph.edges.has(aKey + SEP + bKey)) return;
   graph.edges.add(aKey + SEP + bKey);
   adjAdd(adjOut, aKey, bKey);
   adjAdd(adjIn, bKey, aKey);
 }
-function callersOf(key) { return adjIn.has(key) ? [...adjIn.get(key)] : []; }
-function calleesOf(key) { return adjOut.has(key) ? [...adjOut.get(key)] : []; }
+/** @param {string} key @returns {string[]} */
+function callersOf(key) { return adjIn.has(key) ? [.../** @type {Set<string>} */ (adjIn.get(key))] : []; }
+/** @param {string} key @returns {string[]} */
+function calleesOf(key) { return adjOut.has(key) ? [.../** @type {Set<string>} */ (adjOut.get(key))] : []; }
+/** @param {string} key @returns {string[]} */
 function neighborsOf(key) { return callersOf(key).concat(calleesOf(key)); }
 // 拖动卡片手动摆放的位置（key -> {x,y,layer}），优先于自动布局；重开图/重置时清除
+/** @type {PosMap} */
 const posOverride = new Map();
 function clearGraphEdges() {
   graph.edges.clear();
   adjIn.clear(); adjOut.clear();
 }
 
-function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+/** @param {unknown} s @returns {string} */
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c] || c)); }
+/** @param {unknown} s @returns {string} */
 function escAttr(s) { return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
+/** @param {string|null|undefined} kind @returns {string} */
 function badge(kind) {
   const label = KIND_LABEL[kind] || (kind || '符号');
   return `<span class="badge k-${KIND_CLASS[kind] || 'property'}">${esc(label)}</span>`;
 }
 
-let noticeTimer = null; // 报错自动消失定时器（与 loading 态互斥）
+/** @type {ReturnType<typeof setTimeout>|null} 报错自动消失定时器（与 loading 态互斥） */
+let noticeTimer = null;
+/** @param {string} msg */
 function notice(msg) {
   const el = $('#notice');
   el.classList.remove('info');
@@ -122,7 +188,9 @@ function notice(msg) {
   noticeTimer = setTimeout(() => { el.style.display = 'none'; }, 4500);
 }
 // 加载提示：一直显示直到 clearLoading()，区别于会自动消失的报错
-let progressTimer = null; // 顶部进度条递增定时器
+/** @type {ReturnType<typeof setInterval>|null} 顶部进度条递增定时器 */
+let progressTimer = null;
+/** @param {string} msg */
 function loading(msg) {
   const el = $('#notice');
   clearTimeout(noticeTimer);
@@ -155,10 +223,20 @@ function clearLoading() {
   }, 450);
 }
 
+// 事件目标最近的匹配祖先元素（SVG 里 e.target 是 EventTarget，需断言成 Element 才能 closest）
+/** @param {Event} e @param {string} sel @returns {Element|null} */
+function closestEl(e, sel) {
+  const t = /** @type {Element|null} */ (e.target);
+  return t && t.closest ? t.closest(sel) : null;
+}
+
+// 调后端 API 并解析 JSON。各接口响应形状不同，调用处用 JSDoc 断言成对应类型
+// （GraphResponse / TraceResponse / Hit[] / …），避免整条链路退化成 any。
+/** @param {string} path @param {Record<string, string>} [params] @param {{ signal?: AbortSignal }} [opts] @returns {Promise<unknown>} */
 async function api(path, params, opts) {
   const url = '/api' + path + (params ? '?' + new URLSearchParams(params) : '');
   const res = await fetch(url, opts && opts.signal ? { signal: opts.signal } : undefined);
-  const data = await res.json();
+  const data = /** @type {{ error?: string }} */ (await res.json());
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
@@ -169,6 +247,7 @@ function applyTransformBase() { viewport.setAttribute('transform', `translate(${
 function applyTransform() { applyTransformBase(); drawMinimap(); }
 function updateZoomLevel() { $('#zoomLevel').textContent = Math.round(viewTransform.k * 100) + '%'; }
 function resetView() { viewTransform = { x: 0, y: 0, k: 1 }; applyTransform(); updateZoomLevel(); }
+/** @param {number} factor @param {number|null} [cx] @param {number|null} [cy] */
 function zoomBy(factor, cx, cy) {
   const rect = svg.getBoundingClientRect();
   const px = cx == null ? rect.width / 2 : cx;
@@ -180,7 +259,11 @@ function zoomBy(factor, cx, cy) {
   applyTransform();
   updateZoomLevel();
 }
-let panning = false, panStart = null, panOrigin = null, didPan = false;
+let panning = false, didPan = false;
+/** @type {{x: number, y: number}|null} */
+let panStart = null;
+/** @type {{x: number, y: number}|null} */
+let panOrigin = null;
 svg.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
   panning = true; didPan = false;
@@ -202,15 +285,18 @@ $('#zoomOut').onclick = () => zoomBy(0.8);
 $('#zoomReset').onclick = resetView;
 
 // ===== 节点拖动：按住卡片拖到任意位置（覆盖自动布局，重开图/重置时清除） =====
-let dragNode = null;   // { key, el, startClient, startGraph, startPos, moved }
+/** @type {DragState|null} */
+let dragNode = null;
 let didDragNode = false; // 拖动结束后抑制紧随的 click，避免误触发展开/切中心
 // 屏幕坐标 → 图坐标（经 group 变换与 viewBox 映射反算）
+/** @param {MouseEvent} e @returns {{ x: number, y: number }} */
 function clientToGraph(e) {
   const m = viewport.getScreenCTM();
   if (!m) return { x: 0, y: 0 };
   return new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse());
 }
 // 拖动时实时重算与该节点相连的边
+/** @param {string} key */
 function updateNodeEdges(key) {
   if (!lastLayout || !lastLayout.boxes) return;
   const sel = `.edge[data-a="${CSS.escape(key)}"], .edge[data-b="${CSS.escape(key)}"]`;
@@ -223,7 +309,7 @@ function updateNodeEdges(key) {
 }
 viewport.addEventListener('mousedown', (e) => {
   if (e.button !== 0) return;
-  const n = e.target.closest && e.target.closest('.node');
+  const n = /** @type {SVGElement|null} */ (closestEl(e, '.node'));
   if (!n || !n.dataset.key || !lastLayout) return;
   const p = lastLayout.pos.get(n.dataset.key);
   if (!p) return;
@@ -260,23 +346,26 @@ viewport.addEventListener('click', (e) => {
   if (didDragNode) { e.stopPropagation(); e.preventDefault(); didDragNode = false; }
 }, true);
 
+/** @param {string} name 'files' | 'results' | 'none' */
 function showPanel(name) {
   $('#filePanel').style.display = name === 'files' ? 'flex' : 'none';
   $('#results').style.display = name === 'results' ? 'flex' : 'none';
 }
 
+/** @returns {Promise<void>} */
 async function doSearch() {
-  const q = $('#q').value.trim();
+  const q = $input('#q').value.trim();
   if (!q) return;
   loading('正在搜索：' + q);
   try {
     // 输入以 / 开头（如 /api/activity/Sample/list）时按接口 URL 定位
     if (q.startsWith('/')) { return searchByUrl(q); }
-    const kind = $('#kindFilter').value;
+    const kind = $form('#kindFilter').value;
+    /** @type {Record<string, string>} */
     const params = { q };
     if (kind && kind !== 'all') params.kind = kind;
-    if ($('#chkRegex').checked) params.regex = '1';
-    const hits = await api('/search', params);
+    if ($input('#chkRegex').checked) params.regex = '1';
+    const hits = /** @type {Hit[]} */ (await api('/search', params));
     showPanel('results');
     $('#resultsTitle').textContent = '🔍 搜索结果';
     $('#resultsSub').textContent = `「${q}」共 ${hits.length} 个匹配，点击查看调用图 · 右侧「⧉ 链路」展开全部方法链`;
@@ -288,14 +377,17 @@ async function doSearch() {
 }
 
 // 搜索结果按符号类型分组显示：同组内保持原排序，组头带计数；无 kind 的归入「其他」
+/** @param {Hit[]} hits @returns {string} */
 function renderGroupedHits(hits) {
   const GROUP_ORDER = ['method', 'function', 'class', 'interface', 'type', 'route', 'property', 'variable'];
+  /** @type {Map<string, Hit[]>} */
   const byKind = new Map();
   for (const h of hits) {
     const k = GROUP_ORDER.includes(h.kind) ? h.kind : 'other';
     if (!byKind.has(k)) byKind.set(k, []);
     byKind.get(k).push(h);
   }
+  /** @param {Hit} h @returns {string} */
   const hitHtml = (h) =>
     `<div class="hit" data-symbol="${escAttr(h.qualifiedName || h.name)}" data-name="${escAttr(h.name)}" data-file="${escAttr(h.filePath)}">
        <div class="row1">${badge(h.kind)}<span class="nm" title="${escAttr(h.name)}">${esc(h.name)}</span><span class="trace-btn" title="点击=向下展开它调用的全部方法链 · Shift+点击=向上展开谁调用了它">⧉ 链路</span></div>
@@ -312,14 +404,15 @@ function renderGroupedHits(hits) {
 // 接口 URL / 页面路由定位：/api/xxx/yyy → 匹配 route.ts 接口文件；/xxx/yyy → 匹配 app 目录下 page.tsx 页面
 // 支持：动态路由段（/api/user/123 → [id]/route.ts，/group/entry → 忽略 (admin) 路由组）、剥离 query/hash
 // 模糊降级：精确匹配无结果时自动模糊匹配（输入部分片段如 /api/room → 列出所有相关接口/页面）
+/** @param {string} urlPath @returns {Promise<void>} */
 async function searchByUrl(urlPath) {
   loading('正在定位路由：' + urlPath);
   // 1) 先尝试 Laravel/PHP 路由精确定位（/api/route），命中则展示 handler 方法
   try {
-    const routeHits = await api('/route', { url: urlPath });
+    const routeHits = /** @type {Hit[]} */ (await api('/route', { url: urlPath }));
     if (routeHits && routeHits.length) { renderRouteHits('路由定位', urlPath, routeHits); return; }
   } catch (e) { /* 路由定位不可用则退回文件匹配 */ }
-  const files = await api('/files');
+  const files = /** @type {FileItem[]} */ (await api('/files'));
   // 剥离 query 与 hash，去掉首尾 /
   const pathOnly = urlPath.replace(/[?#].*$/, '').replace(/^\/+/, '').replace(/\/+$/, '');
   let segs = pathOnly.split('/').filter(Boolean);
@@ -333,7 +426,7 @@ async function searchByUrl(urlPath) {
   if (pages.length) { renderFileHits('页面定位', urlPath, pages, '页面文件'); return; }
   // 3.5) 自定义 route-map 规则定位（任意框架，如 php-admin 的 /php-admin/xxx.html → ctlXxx.php::funcXxx）
   try {
-    const urlHits = await api('/urlmap', { url: urlPath });
+    const urlHits = /** @type {Hit[]} */ (await api('/urlmap', { url: urlPath }));
     if (urlHits && urlHits.length) {
       const h = urlHits[0];
       renderRouteHits('路由定位', urlPath, [{ method: 'URL', url: urlPath, handler: h.name, name: h.name, filePath: h.filePath, line: h.line }]);
@@ -343,7 +436,7 @@ async function searchByUrl(urlPath) {
   // 4) 精确匹配无结果 → 模糊匹配：路由 URL / 文件路径包含输入片段即命中
   loading('精确匹配无结果，尝试模糊匹配：' + urlPath);
   try {
-    const fuzzyRoutes = await api('/route', { url: urlPath, fuzzy: '1' });
+    const fuzzyRoutes = /** @type {Hit[]} */ (await api('/route', { url: urlPath, fuzzy: '1' }));
     if (fuzzyRoutes && fuzzyRoutes.length) { renderRouteHits('路由模糊匹配', urlPath, fuzzyRoutes); return; }
   } catch (e) { /* 模糊路由不可用则退回文件模糊匹配 */ }
   const fzSegs = segs.map(s => s.toLowerCase());
@@ -368,6 +461,7 @@ async function searchByUrl(urlPath) {
 }
 
 // route.ts 文件严格匹配：段数一致 + [xxx] 动态段通配
+/** @param {FileItem[]} files @param {string[]} segs @returns {FileItem[]} */
 function matchRouteFiles(files, segs) {
   return files.filter(f => {
     const p = (f.path || '').replace(/\\/g, '/');
@@ -383,6 +477,7 @@ function matchRouteFiles(files, segs) {
 }
 
 // 提取页面路由路径段：src/app/<path>/page.tsx，忽略 (路由组)，排除 api 目录，[xxx] 动态段保留
+/** @param {string|undefined} filePath @returns {string[]|null} */
 function pageSegsOf(filePath) {
   const p = (filePath || '').replace(/\\/g, '/');
   const pSegs = p.split('/');
@@ -396,6 +491,7 @@ function pageSegsOf(filePath) {
 }
 
 // 页面路由严格匹配：段数一致 + [xxx] 动态段通配
+/** @param {FileItem[]} files @param {string[]} segs @returns {FileItem[]} */
 function matchPageFiles(files, segs) {
   return files.filter(f => {
     const rel = pageSegsOf(f.path);
@@ -406,6 +502,7 @@ function matchPageFiles(files, segs) {
 }
 
 // Laravel 路由结果渲染
+/** @param {string} title @param {string} urlPath @param {Hit[]} hits */
 function renderRouteHits(title, urlPath, hits) {
   showPanel('results');
   $('#resultsTitle').textContent = '🔍 ' + title;
@@ -421,6 +518,7 @@ function renderRouteHits(title, urlPath, hits) {
 }
 
 // 接口/页面文件结果渲染
+/** @param {string} title @param {string} urlPath @param {FileItem[]} hits @param {string} [kind] */
 function renderFileHits(title, urlPath, hits, kind = '接口文件') {
   showPanel('results');
   $('#resultsTitle').textContent = '🔍 ' + title;
@@ -440,11 +538,12 @@ function renderFileHits(title, urlPath, hits, kind = '接口文件') {
 }
 
 // 统一绑定搜索结果/文件符号的命中项：主体点击=单层图，⧉ 按钮=全链路（Shift+点击=向上链路）
+/** @param {Element} root */
 function bindHits(root) {
   resFocusReset();
-  root.querySelectorAll('.hit[data-symbol]').forEach(el => {
+  /** @type {HTMLElement[]} */ ([...root.querySelectorAll('.hit[data-symbol]')]).forEach(el => {
     el.onclick = () => startGraph(el.dataset.symbol, el.dataset.name, el.dataset.file);
-    const tb = el.querySelector('.trace-btn');
+    const tb = /** @type {HTMLElement|null} */ (el.querySelector('.trace-btn'));
     if (tb) tb.onclick = (e) => { e.stopPropagation(); startTrace(el.dataset.symbol, el.dataset.name, el.dataset.file, e.shiftKey ? 'up' : 'down'); };
   });
 }
@@ -455,7 +554,7 @@ function updateCrumbs() {
     if (i === history.length - 1) return `<b>${label}</b>`;
     return `<span data-idx="${i}">${label}</span> → `;
   }).join('');
-  $('#crumbs').querySelectorAll('span[data-idx]').forEach(el => {
+  /** @type {HTMLElement[]} */ ([...$('#crumbs').querySelectorAll('span[data-idx]')]).forEach(el => {
     el.onclick = () => {
       const idx = Number(el.dataset.idx);
       const item = history[idx];
@@ -465,6 +564,7 @@ function updateCrumbs() {
     };
   });
 }
+/** @param {string} [text] */
 function updateHeaderInfo(text) { $('#headerInfo').textContent = text || ''; }
 
 // ===== URL 状态：当前图写入 location.hash，刷新/分享链接可恢复 =====
@@ -485,7 +585,8 @@ function restoreFromHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   const g = h.get('g'), t = h.get('t');
   const f = h.get('f') || null;
-  const shortName = (s) => s.split('::').pop();
+  /** @param {string} s @returns {string} */
+  const shortName = (s) => s.split('::').pop() || s;
   if (t) startTrace(t, shortName(t), f, h.get('d') === 'up' ? 'up' : 'down');
   else if (g) startGraph(g, shortName(g), f);
 }
@@ -499,6 +600,7 @@ const KW = new Set(('function class return if else elif elseif for while foreach
   'try catch finally throw throws func package go defer chan struct map range select nil true false null nil none self this super echo print require include_once require_once include ' +
   'fn let mut impl trait pub mod crate where match loop move ref box dyn async await').split(/\s+/));
 const TOKEN_RE = /(\/\*[\s\S]*?\*\/|\/\/[^\n]*|#[^\n]*)|('(?:\\.|[^'\\\n])*'|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`)|(\b\d+(?:\.\d+)?(?:e[+-]?\d+)?\b)|(\b[A-Za-z_]\w*(?=\s*\())|(\b[A-Za-z_]\w*\b)/g;
+/** @param {string} code @returns {string} */
 function highlightCode(code) {
   let out = '', last = 0;
   for (const m of code.matchAll(TOKEN_RE)) {
@@ -514,7 +616,9 @@ function highlightCode(code) {
   return out + esc(code.slice(last));
 }
 
-let curSource = { symbol: '', file: '', raw: '' }; // 当前源码面板内容（复制按钮用）
+/** @type {CurSource} 当前源码面板内容（复制按钮用） */
+let curSource = { symbol: '', file: '', raw: '' };
+/** @param {{ symbol?: string, source?: string }} data @param {string|null} file */
 function showSource(data, file) {
   $('#src').style.display = 'flex';
   updateSrcFloat(); // 悬浮面板打开，minimap/角标让位
@@ -526,6 +630,7 @@ function showSource(data, file) {
   const m = raw.match(/```[\w-]*\n([\s\S]*?)```/);
   $('#srcBody').innerHTML = m ? highlightCode(m[1].replace(/\n$/, '')) : esc(raw || '（无源码信息）');
 }
+/** @param {string} text @param {string} okMsg @returns {Promise<void>} */
 async function copyText(text, okMsg) {
   try {
     await navigator.clipboard.writeText(text);
@@ -551,7 +656,7 @@ $('#btnImplementations').onclick = async () => {
   $('#resultsSub').textContent = `正在查找「${curSource.symbol}」的实现…`;
   $('#resultsBody').innerHTML = '<div class="hit">⏳ 查询实现类/实现方法…</div>';
   try {
-    const hits = await api('/implementations', { symbol: curSource.symbol, file: curSource.file });
+    const hits = /** @type {Hit[]} */ (await api('/implementations', { symbol: curSource.symbol, file: curSource.file }));
     $('#resultsSub').textContent = `「${curSource.symbol}」找到 ${hits.length} 个候选实现`;
     $('#resultsBody').innerHTML = hits.length ? hits.map(h =>
       `<div class="hit" data-symbol="${escAttr(h.qualifiedName || h.name)}" data-name="${escAttr(h.name)}" data-file="${escAttr(h.filePath)}">
@@ -564,19 +669,23 @@ $('#btnImplementations').onclick = async () => {
 };
 
 // 把一次 /api/graph 结果并入图模型（过滤 import 引用与类型节点，保持图干净）
+/** @param {string} name @returns {boolean} */
 function isImportRef(name) { return /^(@\/|\.\/|\.\.\/|\/|node:)/.test(name); }
 const GRAPH_SKIP_KIND = new Set(['import', 'interface', 'type']);
-function isRefNoise(c) { return c && (GRAPH_SKIP_KIND.has(c.kind) || isImportRef(c.name)); }
+/** @param {Hit|null|undefined} c @returns {boolean} */
+function isRefNoise(c) { return !!(c && ((c.kind && GRAPH_SKIP_KIND.has(c.kind)) || isImportRef(c.name))); }
+/** @param {GraphResponse} data @param {string} key */
 function integrate(data, key) {
   for (const c of data.callers || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath, c.kind, c.startLine); addEdge(n.key, key); }
   for (const c of data.callees || []) { if (isRefNoise(c)) continue; const n = addNode(c.name, c.filePath, c.kind, c.startLine); addEdge(key, n.key); }
 }
 
 // 全新开始：以 symbol 为中心。query 用于 API（可为限定名），name+file 用于节点键
+/** @param {string} query @param {string} name @param {string|null|undefined} file @returns {Promise<void>} */
 async function startGraph(query, name, file) {
   loading('正在加载调用图：' + name);
   try {
-    const data = await api('/graph', file ? { symbol: query, file } : { symbol: query });
+    const data = /** @type {GraphResponse} */ (await api('/graph', file ? { symbol: query, file } : { symbol: query }));
     graph.nodes.clear(); clearGraphEdges(); posOverride.clear();
     expandStack.length = 0;
     const center = addNode(name, file || null, data.kind, data.line);
@@ -600,10 +709,13 @@ async function startGraph(query, name, file) {
 }
 
 // 全链路：递归展开某符号的调用链（direction=down 向下它调谁 / up 向上谁调它），SSE 流式进度，可取消
-let traceES = null; // 进行中的 EventSource，取消/重置时关闭
+/** @type {EventSource|null} 进行中的 EventSource，取消/重置时关闭 */
+let traceES = null;
+/** @param {boolean} [silent] */
 function cancelTrace(silent) {
   if (traceES) { traceES.close(); traceES = null; if (!silent) notice('已取消链路展开'); clearLoading(); }
 }
+/** @param {string} msg */
 function traceLoading(msg) {
   const el = $('#notice');
   clearTimeout(noticeTimer);
@@ -612,6 +724,7 @@ function traceLoading(msg) {
   el.style.display = 'block';
   $('#btnCancelTrace').onclick = () => cancelTrace();
 }
+/** @param {string} query @param {string} [name] @param {string|null} [file] @param {'up'|'down'} [direction] */
 function startTrace(query, name, file, direction = 'down') {
   cancelTrace(true);
   const dirLabel = direction === 'up' ? '上游链路（谁调用了它）' : '全链路';
@@ -623,6 +736,7 @@ function startTrace(query, name, file, direction = 'down') {
   pf.style.width = '2%';
   clearInterval(progressTimer);
   let dynMax = 20;
+  /** @param {number} n */
   const driveProgress = (n) => {
     dynMax = Math.max(dynMax, n * 1.15 + 3);
     const target = Math.min(95, (n / dynMax) * 95);
@@ -637,7 +751,7 @@ function startTrace(query, name, file, direction = 'down') {
   let settled = false; // result/error 任一到达后忽略后续事件（连接关闭也会触发 error，避免误报）
   es.addEventListener('progress', (e) => {
     try {
-      const p = JSON.parse(e.data);
+      const p = /** @type {{ nodes?: number }} */ (JSON.parse(e.data));
       driveProgress(p.nodes || 0);
       $('#notice').innerHTML = `⏳ 正在展开${dirLabel}：${esc(name || query)} · 已加载 ${p.nodes || 0} 个节点 <button class="secondary cancel-trace" id="btnCancelTrace">取消</button>`;
       $('#btnCancelTrace').onclick = () => cancelTrace();
@@ -647,6 +761,7 @@ function startTrace(query, name, file, direction = 'down') {
     if (settled) return;
     settled = true;
     es.close(); traceES = null;
+    /** @type {TraceResponse} */
     let data;
     try { data = JSON.parse(e.data); } catch { notice('链路数据解析失败'); clearLoading(); return; }
     if (!data.nodes || !data.nodes.length) { notice('未找到可展开的调用链路'); clearLoading(); return; }
@@ -690,6 +805,7 @@ function startTrace(query, name, file, direction = 'down') {
 }
 
 // 保留现有图，仅切换中心（面包屑用）。切中心后撤销栈失效，清空避免错乱。
+/** @param {string} key @param {string} symbol @param {string|null|undefined} [file] */
 function recenter(key, symbol, file) {
   expandStack.length = 0;
   if (graph.nodes.has(key)) { graph.centerKey = key; relayout(); }
@@ -697,12 +813,15 @@ function recenter(key, symbol, file) {
 }
 
 // 当前图状态快照（用于展开撤销）。节点需浅拷贝，避免展开时改动的 expanded 等状态污染快照。
+/** @returns {Snapshot} */
 function snapshotGraph() {
+  /** @type {Map<string, GNode>} */
   const nodes = new Map();
   for (const [k, n] of graph.nodes) nodes.set(k, { ...n });
   // 手工拖动的摆放位置也要快照，否则撤销只是回退了图，节点却停在拖动后的位置
   return { nodes, edges: new Set(graph.edges), centerKey: graph.centerKey, posOverride: new Map(posOverride) };
 }
+/** @param {Snapshot} snap */
 function restoreSnapshot(snap) {
   graph.nodes = snap.nodes;
   graph.edges = snap.edges;
@@ -730,6 +849,7 @@ function undoExpand() {
 // 方向规则：中心右侧（下游）节点只并入「它调用的」，左侧（上游）只并入「调用它的」——
 // 否则点开下游的 C 会把同样调用 C 的 E/F/G 等旁路调用者也拉进图，污染当前流程。
 // 想看某节点的双向关系：双击它以它为新中心。右键菜单可强制选方向。
+/** @param {string} key @param {'auto'|'up'|'down'|'both'} [direction] @returns {Promise<void>} */
 async function expandNode(key, direction = 'auto') {
   const node = graph.nodes.get(key);
   if (!node || expanding) return;
@@ -737,7 +857,7 @@ async function expandNode(key, direction = 'auto') {
   const snap = snapshotGraph(); // 展开前快照：成功入栈供撤销，失败恢复现场
   loading('正在展开：' + node.name);
   try {
-    const data = await api('/graph', node.file ? { symbol: node.query || node.name, file: node.file } : { symbol: node.query || node.name });
+    const data = /** @type {GraphResponse} */ (await api('/graph', node.file ? { symbol: node.query || node.name, file: node.file } : { symbol: node.query || node.name }));
     expandStack.push(snap);
     if (expandStack.length > 20) expandStack.shift();
     node.expanded = true;
@@ -774,6 +894,7 @@ async function expandNode(key, direction = 'auto') {
 }
 
 // 展开上层（调用它的）：与 expandNode 同流程，但只并入 callers，不展开 callees
+/** @param {string} key @returns {Promise<void>} */
 async function expandCallers(key) {
   const node = graph.nodes.get(key);
   if (!node || expanding) return;
@@ -781,7 +902,7 @@ async function expandCallers(key) {
   const snap = snapshotGraph();
   loading('正在展开上层：' + node.name);
   try {
-    const data = await api('/graph', node.file ? { symbol: node.query || node.name, file: node.file } : { symbol: node.query || node.name });
+    const data = /** @type {GraphResponse} */ (await api('/graph', node.file ? { symbol: node.query || node.name, file: node.file } : { symbol: node.query || node.name }));
     expandStack.push(snap);
     if (expandStack.length > 20) expandStack.shift();
     node.expanded = true;
@@ -801,6 +922,7 @@ async function expandCallers(key) {
 
 // Dify/React Flow 风格连线：从源卡片侧边中点水平引出，以水平切线贝塞尔平滑进入目标侧边中点。
 // 模块级函数：relayout 画边与拖动卡片时实时重算共用。
+/** @param {Pos} pa @param {Pos} pb @param {Box} ba @param {Box} bb @param {boolean} cycle @param {number} edgeIndex @returns {string} */
 function edgePath(pa, pb, ba, bb, cycle, edgeIndex) {
   const toRight = pb.x >= pa.x;
   const dir = toRight ? 1 : -1;
@@ -819,20 +941,26 @@ function edgePath(pa, pb, ba, bb, cycle, edgeIndex) {
 }
 
 // 布局：从中心 BFS 分层，左调用者右被调用者
+/** @returns {Map<string, Pos>} */
 function layoutGraph() {
-  const layerOf = new Map([[graph.centerKey, 0]]);
-  const q = [graph.centerKey];
+  /** @type {Map<string, number>} */
+  const layerOf = new Map([[graph.centerKey || '', 0]]);
+  /** @type {string[]} */
+  const q = [graph.centerKey || ''];
   while (q.length) {
     const u = q.shift();
     const L = layerOf.get(u);
     for (const v of callersOf(u)) if (!layerOf.has(v) && shouldShow(v)) { layerOf.set(v, L - 1); q.push(v); }
     for (const v of calleesOf(u)) if (!layerOf.has(v) && shouldShow(v)) { layerOf.set(v, L + 1); q.push(v); }
   }
+  /** @type {Map<number, string[]>} */
   const byLayer = new Map();
-  for (const [k, L] of layerOf) { if (!byLayer.has(L)) byLayer.set(L, []); byLayer.get(L).push(k); }
+  for (const [k, L] of layerOf) { if (!byLayer.has(L)) byLayer.set(L, []); /** @type {string[]} */ (byLayer.get(L)).push(k); }
+  /** @type {Map<string, Pos>} */
   const pos = new Map();
   const CX = 0, CY = 0, colW = hotspotMode ? 350 : 310, rowH = hotspotMode ? 92 : 76;
   const order = [...byLayer.keys()].sort((a, b) => Math.abs(a) - Math.abs(b) || a - b);
+  /** @param {string} k @param {number|null} innerL @returns {number} */
   const innerY = (k, innerL) => {
     if (innerL == null) return CY;
     const ys = neighborsOf(k).filter(n => layerOf.get(n) === innerL && pos.has(n)).map(n => pos.get(n).y);
@@ -849,6 +977,7 @@ function layoutGraph() {
   return pos;
 }
 
+/** @param {GNode} node @param {number} layer @returns {string} */
 function nodeClass(node, layer) {
   if (node.key === graph.centerKey) return 'center';
   if (layer < 0) return 'caller';
@@ -857,6 +986,7 @@ function nodeClass(node, layer) {
 }
 
 // 节点卡片尺寸：mkNode 与连线锚点共用，保证连线准确落在卡片侧边上
+/** @param {GNode} node @returns {Box} */
 function nodeBox(node) {
   const label = node.label;
   const filePath = node.file ? node.file.replace(/\\/g, '/') : '';
@@ -887,6 +1017,7 @@ function relayout() {
 
   // 箭头标记
   const defs = g('defs', {});
+  /** @param {string} id @param {string} cls @returns {SVGElement} */
   const mkMarker = (id, cls) => { const m = g('marker', { id, viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }); m.appendChild(g('path', { d: 'M 0 0 L 10 5 L 0 10 z', class: cls })); return m; };
   defs.appendChild(mkMarker('arr', 'marker-arr'));
   defs.appendChild(mkMarker('arrIn', 'marker-arrIn'));
@@ -894,8 +1025,9 @@ function relayout() {
   viewport.appendChild(defs);
 
   // 可见节点的卡片尺寸，连线锚点用
+  /** @type {Map<string, Box>} */
   const boxes = new Map();
-  for (const k of visibleKeys) boxes.set(k, nodeBox(graph.nodes.get(k)));
+  for (const k of visibleKeys) boxes.set(k, nodeBox(/** @type {GNode} */ (graph.nodes.get(k))));
 
   // 边（两端都可见才画，避免指向未渲染节点）
   let edgeCount = 0;
@@ -965,9 +1097,10 @@ function relayout() {
   drawMinimap();
 }
 
+/** @param {GNode} node @param {Pos} p @returns {SVGElement} */
 function mkNode(node, p) {
   const label = node.label;
-  const kindLabel = KIND_LABEL[node.kind] || (node.kind ? node.kind : (node.key === graph.centerKey ? '当前中心' : '符号'));
+  const kindLabel = KIND_LABEL[node.kind || ''] || (node.kind ? node.kind : (node.key === graph.centerKey ? '当前中心' : '符号'));
   const filePath = node.file ? node.file.replace(/\\/g, '/') : '';
   const fileName = filePath ? filePath.split('/').pop() : '';
   const lineLabel = fileName ? `${fileName}${node.line ? ':' + node.line : ''}` : '';
@@ -1038,14 +1171,15 @@ function mkNode(node, p) {
 }
 
 // ===== minimap 概览图：节点缩略 + 当前视口框，点击跳转 =====
-let lastLayout = null; // { pos, vb, visibleKeys }，relayout 时更新
+/** @type {Layout|null} 最近一次布局结果，relayout 时更新 */
+let lastLayout = null;
 let minimapScheduled = false;
 function drawMinimap() {
   if (minimapScheduled) return;
   minimapScheduled = true;
   requestAnimationFrame(() => {
     minimapScheduled = false;
-    const cv = $('#minimap');
+    const cv = $canvas('#minimap');
     if (!lastLayout || graph.nodes.size < 4) { cv.style.display = 'none'; return; }
     cv.style.display = 'block';
     const ctx = cv.getContext('2d');
@@ -1098,7 +1232,7 @@ function drawMinimap() {
 $('#minimap').addEventListener('click', (e) => {
   if (!lastLayout) return;
   const { vb } = lastLayout;
-  const cv = $('#minimap');
+  const cv = $canvas('#minimap');
   const rc = cv.getBoundingClientRect();
   const W = cv.width, H = cv.height;
   const s = Math.min(W / vb.w, H / vb.h) * 0.92;
@@ -1119,6 +1253,7 @@ $('#minimap').addEventListener('click', (e) => {
 // ===== 节点右键菜单：以此为中心 / 展开下层 / 展开上层 / 复制路径 / 在编辑器打开 =====
 const ctxMenu = $('#ctxMenu');
 function hideCtx() { ctxMenu.style.display = 'none'; }
+/** @param {string} key @param {number} x @param {number} y */
 function showCtx(key, x, y) {
   const node = graph.nodes.get(key);
   if (!node) return;
@@ -1132,7 +1267,7 @@ function showCtx(key, x, y) {
     node.file && { label: '↗ 在编辑器打开', act: async () => { window.open(vscodeUrl(node.file, node.line, await ensureRoot())); } },
   ].filter(Boolean);
   ctxMenu.innerHTML = items.map((it, i) => it.sep ? '<div class="ctx-sep"></div>' : `<div class="ctx-item" data-i="${i}">${it.label}</div>`).join('');
-  ctxMenu.querySelectorAll('.ctx-item').forEach(el => { el.onclick = () => { hideCtx(); items[Number(el.dataset.i)].act(); }; });
+  /** @type {HTMLElement[]} */ ([...ctxMenu.querySelectorAll('.ctx-item')]).forEach(el => { el.onclick = () => { hideCtx(); items[Number(el.dataset.i)].act(); }; });
   ctxMenu.style.display = 'block';
   const tw = ctxMenu.offsetWidth, th = ctxMenu.offsetHeight;
   ctxMenu.style.left = Math.min(x, innerWidth - tw - 8) + 'px';
@@ -1140,7 +1275,7 @@ function showCtx(key, x, y) {
 }
 // 事件委托：relayout 重建 DOM 后无需重新绑定；任意点击/Esc 关闭
 viewport.addEventListener('contextmenu', (e) => {
-  const n = e.target.closest && e.target.closest('.node');
+  const n = /** @type {SVGElement|null} */ (closestEl(e, '.node'));
   if (!n || !n.dataset.key) return hideCtx();
   e.preventDefault();
   showCtx(n.dataset.key, e.clientX, e.clientY);
@@ -1159,6 +1294,7 @@ $('#btnHotspot').onclick = () => {
   relayout();
   notice(hotspotMode ? '热点视图：节点大小按入度映射' : '已关闭热点视图');
 };
+/** @type {string|null} */
 let pathSrcKey = null;
 function clearPath() {
   pathMode = false; pathSrcKey = null;
@@ -1176,7 +1312,7 @@ $('#btnPath').onclick = () => {
 // 路径模式下拦截节点点击（捕获阶段，先于 mkNode 的展开逻辑）
 viewport.addEventListener('click', (e) => {
   if (!pathMode) return;
-  const n = e.target.closest && e.target.closest('.node');
+  const n = /** @type {SVGElement|null} */ (closestEl(e, '.node'));
   if (!n || !n.dataset.key) return;
   e.stopPropagation();
   e.preventDefault();
@@ -1192,6 +1328,7 @@ viewport.addEventListener('click', (e) => {
   $('#btnPath').classList.remove('active');
 }, true);
 // 有向 BFS 最短路径（沿调用方向 a→b）
+/** @param {string} fromKey @param {string} toKey @returns {PathHit|null} */
 function findPath(fromKey, toKey) {
   if (fromKey === toKey) return { nodes: [fromKey], edges: [] };
   const prev = new Map([[fromKey, null]]);
@@ -1226,10 +1363,10 @@ async function loadFiles() {
   showPanel('files');
   $('#fileList').innerHTML = '<div class="hit">⏳ 加载文件列表…</div>';
   try {
-    allFiles = await api('/files');
+    allFiles = /** @type {FileItem[]} */ (await api('/files'));
     renderFiles();
     // 换关键词时回到第一页，避免沿用上次「显示更多」的展开量
-    $('#fileFilter').addEventListener('input', () => { fileListLimit = FILE_PAGE; renderFiles(); });
+    $form('#fileFilter').addEventListener('input', () => { fileListLimit = FILE_PAGE; renderFiles(); });
     // PHP/Laravel 项目：默认显示接口/路由列表（按文件分组）
     const hasRoutes = allFiles.some(f => /Routes?\//.test(f.path || ''));
     if (hasRoutes) showRouteList();
@@ -1240,9 +1377,10 @@ async function loadFiles() {
 async function showRouteList() {
   loading('正在加载接口列表…');
   try {
-    const list = await api('/routes');
+    const list = /** @type {Hit[]} */ (await api('/routes'));
     if (!list || !list.length) { clearLoading(); return; }
     const escFn = esc, escAttrFn = escAttr;
+    /** @type {Record<string, Hit[]>} */
     const byFile = {};
     for (const r of list) (byFile[r.file] = byFile[r.file] || []).push(r);
     const blocks = Object.entries(byFile).map(([file, routes], i) => {
@@ -1264,7 +1402,7 @@ async function showRouteList() {
     bindHits($('#resultsBody'));
     // 文件分组折叠/展开：委托在容器上，避免每次重建后重新绑定
     $('#resultsBody').onclick = (e) => {
-      const h = e.target.closest('.route-file');
+      const h = /** @type {HTMLElement|null} */ (closestEl(e, '.route-file'));
       if (!h) return;
       const body = document.getElementById('fl-' + h.dataset.toggle);
       if (!body) return;
@@ -1279,7 +1417,7 @@ async function showRouteList() {
 const FILE_PAGE = 200; // 文件列表每页条数，点「显示更多」继续加载
 let fileListLimit = FILE_PAGE;
 function renderFiles() {
-  const filter = $('#fileFilter').value.trim().toLowerCase();
+  const filter = $form('#fileFilter').value.trim().toLowerCase();
   const matched = allFiles
     // 噪音文件（.min.js / node_modules / dist 等）默认隐藏，否则压缩 SDK 会长期霸占列表头部；
     // 复用画布那个「噪」开关，语义与节点过滤保持一致
@@ -1294,13 +1432,15 @@ function renderFiles() {
        </div>`).join('')
     : '<div class="hit">没有匹配的文件</div>')
     + (more > 0 ? `<div class="file-more">显示更多（还有 ${more} 个）</div>` : '');
-  $('#fileList').querySelectorAll('.file').forEach(el => el.onclick = () => toggleFileSymbols(el, el.dataset.path));
-  const moreEl = $('#fileList').querySelector('.file-more');
+  /** @type {HTMLElement[]} */ ([...$('#fileList').querySelectorAll('.file')]).forEach(el => el.onclick = () => toggleFileSymbols(el, el.dataset.path));
+  const moreEl = /** @type {HTMLElement|null} */ ($('#fileList').querySelector('.file-more'));
   if (moreEl) moreEl.onclick = () => { fileListLimit += FILE_PAGE; renderFiles(); };
   updateHeaderInfo(`共 ${allFiles.length} 个文件 · 显示 ${list.length} 个`);
 }
 // 文件行内手风琴：点击文件就地展开/收起它的符号列表，文件列表始终可见（不再整页切换走）
-const fileSymsCache = new Map(); // file -> symbols，展开过一次后不重复请求
+/** @type {Map<string, SymbolItem[]>} file -> symbols，展开过一次后不重复请求 */
+const fileSymsCache = new Map();
+/** @param {HTMLElement} rowEl @param {string} file @returns {Promise<void>} */
 async function toggleFileSymbols(rowEl, file) {
   const next = rowEl.nextElementSibling;
   if (next && next.classList.contains('file-syms')) { // 已展开 → 收起
@@ -1316,7 +1456,7 @@ async function toggleFileSymbols(rowEl, file) {
   try {
     let symbols = fileSymsCache.get(file);
     if (!symbols) {
-      const data = await api('/symbols', { file });
+      const data = /** @type {SymbolsResponse} */ (await api('/symbols', { file }));
       symbols = data.symbols || [];
       fileSymsCache.set(file, symbols);
       if (data.truncated) notice(`该文件共 ${data.total} 个符号，仅显示前 ${symbols.length} 个，其余请用顶部搜索`);
@@ -1336,12 +1476,15 @@ async function toggleFileSymbols(rowEl, file) {
 
 // 搜索结果键盘导航：↑/↓ 移动高亮，Enter 打开当前项（无高亮则执行搜索）；结果列表重建后重置
 let resIdx = -1;
-function resItems() { return [...$('#resultsBody').querySelectorAll('.hit[data-symbol]')]; }
+/** @returns {HTMLElement[]} */
+function resItems() { return /** @type {HTMLElement[]} */ ([...$('#resultsBody').querySelectorAll('.hit[data-symbol]')]); }
+/** @param {HTMLElement[]} items */
 function resHighlight(items) {
   items.forEach((el, i) => el.classList.toggle('kbd-active', i === resIdx));
   const cur = items[resIdx];
   if (cur) cur.scrollIntoView({ block: 'nearest' });
 }
+/** @param {number} delta */
 function resMove(delta) {
   const items = resItems();
   if (!items.length) return;
@@ -1351,7 +1494,7 @@ function resMove(delta) {
 function resFocusReset() { resIdx = -1; resItems().forEach(el => el.classList.remove('kbd-active')); }
 
 $('#btnSearch').onclick = doSearch;
-$('#q').addEventListener('keydown', e => {
+$input('#q').addEventListener('keydown', e => {
   if (e.key === 'ArrowDown') { e.preventDefault(); resMove(1); }
   else if (e.key === 'ArrowUp') { e.preventDefault(); resMove(-1); }
   else if (e.key === 'Enter') {
@@ -1359,20 +1502,23 @@ $('#q').addEventListener('keydown', e => {
     if (resIdx >= 0 && items[resIdx]) { e.preventDefault(); items[resIdx].click(); }
     else doSearch();
   }
-  else if (e.key === 'Escape') { e.target.value = ''; e.target.blur(); }
+  else if (e.key === 'Escape') { const t = /** @type {HTMLInputElement} */ (e.target); t.value = ''; t.blur(); }
 });
 // ===== 项目切换器：localStorage 保存最近 cgv view 实例 =====
 const projectModal = $('#projectModal');
 const PROJECTS_KEY = 'cgv-projects';
+/** @returns {ProjectItem[]} */
 function loadProjects() {
   try {
     const list = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
     return Array.isArray(list) ? list.filter(p => p && p.url) : [];
   } catch { return []; }
 }
+/** @param {ProjectItem[]} list */
 function saveProjects(list) {
   try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(list.slice(0, 12))); } catch { /* 隐私模式忽略 */ }
 }
+/** @param {string} value @returns {string|null} */
 function normalizedProjectUrl(value) {
   try {
     const u = new URL(value, location.href);
@@ -1390,14 +1536,14 @@ function renderProjects() {
       <div class="project-actions"><button class="secondary project-open" data-i="${i}">打开</button><button class="secondary project-delete" data-i="${i}" title="删除">✕</button></div>
     </div>`;
   }).join('') : '<div class="project-empty">暂无保存的项目，请添加 cgv view 地址。</div>';
-  $('#projectList').querySelectorAll('.project-open').forEach(el => el.onclick = () => {
+  /** @type {HTMLElement[]} */ ([...$('#projectList').querySelectorAll('.project-open')]).forEach(el => el.onclick = () => {
     const p = loadProjects()[Number(el.dataset.i)];
     if (!p) return;
     const target = normalizedProjectUrl(p.url);
     if (!target) return notice('项目地址无效');
     location.href = target + (location.hash || '');
   });
-  $('#projectList').querySelectorAll('.project-delete').forEach(el => el.onclick = () => {
+  /** @type {HTMLElement[]} */ ([...$('#projectList').querySelectorAll('.project-delete')]).forEach(el => el.onclick = () => {
     const list = loadProjects();
     list.splice(Number(el.dataset.i), 1);
     saveProjects(list);
@@ -1410,35 +1556,36 @@ $('#btnProjects').onclick = openProjects;
 $('#projectClose').onclick = closeProjects;
 projectModal.addEventListener('click', (e) => { if (e.target === projectModal) closeProjects(); });
 $('#projectAdd').onclick = () => {
-  const name = $('#projectName').value.trim();
-  const url = normalizedProjectUrl($('#projectUrl').value.trim());
+  const name = $form('#projectName').value.trim();
+  const url = normalizedProjectUrl($form('#projectUrl').value.trim());
   if (!url) { notice('请输入有效的 http(s) 项目地址'); return; }
   const list = loadProjects().filter(p => normalizedProjectUrl(p.url) !== url);
   list.unshift({ name: name || url, url });
   saveProjects(list);
-  $('#projectName').value = '';
-  $('#projectUrl').value = '';
+  $form('#projectName').value = '';
+  $form('#projectUrl').value = '';
   renderProjects();
 };
 
 // ===== 命令面板：Ctrl+K / ⌘K 快速执行常用操作 =====
 const commandModal = $('#commandModal');
-const commandInput = $('#commandInput');
+const commandInput = $input('#commandInput');
 const commandList = $('#commandList');
 let commandIndex = 0;
 const commands = [
-  { id: 'search', label: '聚焦搜索框', key: '/', run: () => { $('#q').focus(); $('#q').select(); } },
+  { id: 'search', label: '聚焦搜索框', key: '/', run: () => { $input('#q').focus(); $input('#q').select(); } },
   { id: 'files', label: '打开文件浏览', run: () => loadFiles() },
   { id: 'upstream', label: '展开上游链路', run: () => $('#btnTraceUp').click() },
   { id: 'path', label: '启动路径查找', run: () => $('#btnPath').click() },
   { id: 'stack', label: '粘贴堆栈定位', run: () => $('#btnStack').click() },
   { id: 'share', label: '复制分享链接', run: () => $('#btnShareLink').click() },
   { id: 'theme', label: '切换主题', run: () => $('#btnTheme').click() },
-  { id: 'noise', label: '切换噪音节点', run: () => { $('#chkNoise').click(); } },
+  { id: 'noise', label: '切换噪音节点', run: () => { $input('#chkNoise').click(); } },
   { id: 'reset', label: '重置画布与历史', run: () => $('#btnReset').click() },
   { id: 'reindex', label: '重新建立索引', run: () => $('#btnReindex').click() },
   { id: 'help', label: '打开使用说明', run: () => $('#btnHelp').click() },
 ];
+/** @returns {CmdItem[]} */
 function visibleCommands() {
   const q = commandInput.value.trim().toLowerCase();
   return q ? commands.filter(c => c.label.toLowerCase().includes(q) || c.id.includes(q)) : commands;
@@ -1449,7 +1596,7 @@ function renderCommands() {
   commandList.innerHTML = list.length
     ? list.map((c, i) => `<div class="command-item${i === commandIndex ? ' active' : ''}" data-id="${c.id}"><span>${esc(c.label)}</span>${c.key ? `<kbd>${esc(c.key)}</kbd>` : ''}</div>`).join('')
     : '<div class="command-item" style="cursor:default;color:var(--text-3)">没有匹配的命令</div>';
-  commandList.querySelectorAll('.command-item[data-id]').forEach(el => {
+  /** @type {HTMLElement[]} */ ([...commandList.querySelectorAll('.command-item[data-id]')]).forEach(el => {
     el.onclick = () => executeCommand(el.dataset.id);
   });
   const active = commandList.querySelector('.command-item.active');
@@ -1460,6 +1607,7 @@ function closeCommands() {
   commandInput.value = '';
   commandIndex = 0;
 }
+/** @param {string} id */
 function executeCommand(id) {
   const command = commands.find(c => c.id === id);
   if (!command) return;
@@ -1491,12 +1639,16 @@ document.addEventListener('keydown', (e) => {
 // ===== 堆栈定位：解析 file:line[:column]，按源码符号范围定位并打开调用图 =====
 const stackModal = $('#stackModal');
 const closeStack = () => stackModal.classList.remove('show');
-$('#btnStack').onclick = () => { stackModal.classList.add('show'); $('#stackInput').focus(); };
+$('#btnStack').onclick = () => { stackModal.classList.add('show'); $form('#stackInput').focus(); };
 $('#stackClose').onclick = closeStack;
 stackModal.addEventListener('click', (e) => { if (e.target === stackModal) closeStack(); });
 
+/** @param {string} text @returns {StackFrame[]} */
 function parseStackFrames(text) {
-  const frames = [], seen = new Set();
+  /** @type {StackFrame[]} */
+  const frames = [];
+  /** @type {Set<string>} */
+  const seen = new Set();
   // 支持 JS/TS、Python、Go、Java 等常见格式；忽略明显的 node_modules/vendor 外部帧
   const re = /(?:\bat\s+[^\n(]*\()?((?:[A-Za-z]:[\\/]|\.\.?[\\/]|\/)?[^\s()<>]+?[\\/]?(?:[^\s()<>]*[\\/])*(?:[^\s()<>]*\.(?:js|jsx|ts|tsx|mjs|cjs|mts|cts|go|py|java|rs|php|vue|svelte))):(\d+)(?::\d+)?\)?/g;
   for (const m of text.matchAll(re)) {
@@ -1509,14 +1661,16 @@ function parseStackFrames(text) {
   return frames.slice(0, 50);
 }
 
+/** @returns {Promise<void>} */
 async function locateStack() {
-  const frames = parseStackFrames($('#stackInput').value);
+  const frames = parseStackFrames($form('#stackInput').value);
   const out = $('#stackResults');
   if (!frames.length) { out.innerHTML = '<div class="hit">未识别到项目文件:行号（支持 file.ts:42:8 格式）</div>'; return; }
   out.innerHTML = '<div class="hit">⏳ 正在匹配符号…</div>';
+  /** @type {Map<string, SymbolItem[]>} */
   const byFile = new Map();
   await Promise.all([...new Set(frames.map(f => f.file))].map(async (file) => {
-    try { byFile.set(file, (await api('/symbols', { file })).symbols || []); } catch { byFile.set(file, []); }
+    try { byFile.set(file, /** @type {SymbolsResponse} */ (await api('/symbols', { file })).symbols || []); } catch { byFile.set(file, []); }
   }));
   const matches = frames.map(frame => {
     const symbols = byFile.get(frame.file) || [];
@@ -1532,7 +1686,7 @@ async function locateStack() {
       <span class="nm">${m.symbol ? esc(m.symbol.name) : '—'}</span>
     </div>`;
   }).join('');
-  out.querySelectorAll('.stack-frame').forEach(el => el.onclick = () => {
+  /** @type {HTMLElement[]} */ ([...out.querySelectorAll('.stack-frame')]).forEach(el => el.onclick = () => {
     const m = matches[Number(el.dataset.i)];
     if (!m.symbol) { notice(`未找到 ${m.file}:${m.line} 对应的符号`); return; }
     closeStack();
@@ -1548,8 +1702,9 @@ $('#helpClose').onclick = closeHelp;
 $('#helpModal').addEventListener('click', (e) => { if (e.target === $('#helpModal')) closeHelp(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && $('#helpModal').classList.contains('show')) closeHelp(); });
 // 弹窗内"试试示例"：关闭弹窗并自动执行演示搜索
-$('#helpTry').onclick = () => { closeHelp(); $('#q').value = '/api/media/audit'; doSearch(); };
-let savedSrcWidth = null; // 拖拽调整过的手动宽度，折叠时保存，展开时恢复
+$('#helpTry').onclick = () => { closeHelp(); $input('#q').value = '/api/media/audit'; doSearch(); };
+/** @type {string|null} 拖拽调整过的手动宽度，折叠时保存，展开时恢复 */
+let savedSrcWidth = null;
 // 源码面板悬浮在画布上：打开时同步 body 类与 --src-w，让 minimap/角标左移避让
 // （折叠后只是右上角小胶囊，不与底部 minimap 重叠，无需让位）
 function updateSrcFloat() {
@@ -1560,6 +1715,7 @@ function updateSrcFloat() {
   const w = p.getBoundingClientRect().width || 420;
   document.body.style.setProperty('--src-w', Math.round(w) + 'px');
 }
+/** @param {boolean} collapsed */
 function setSrcCollapsed(collapsed) {
   const panel = $('#src');
   if (collapsed) {
@@ -1577,19 +1733,19 @@ $('#srcToggle').onclick = () => setSrcCollapsed(!$('#src').classList.contains('c
 $('#srcStrip').onclick = () => setSrcCollapsed(false);
 // 右侧源码面板：拖拽左边界调整宽度（260px ~ 900px，不超出窗口）
 const srcResizer = $('#srcResizer');
-let resizingSrc = false;
+let resizingSrc = false, srcDragStartX = 0, srcDragStartW = 0;
 srcResizer.addEventListener('mousedown', (e) => {
   e.preventDefault();
   if ($('#src').classList.contains('collapsed')) setSrcCollapsed(false); // 折叠态先展开再拖
-  srcResizer._startX = e.clientX;
-  srcResizer._startW = $('#src').getBoundingClientRect().width;
+  srcDragStartX = e.clientX;
+  srcDragStartW = $('#src').getBoundingClientRect().width;
   resizingSrc = true;
   document.body.style.userSelect = 'none'; // 拖拽期间禁用文本选中
 });
 window.addEventListener('mousemove', (e) => {
   if (!resizingSrc) return;
   // 拖拽手柄在面板左边界：向左拖=面板加宽（放大），向右拖=收窄（缩小）
-  const w = Math.max(260, Math.min(900, window.innerWidth - 60, srcResizer._startW - (e.clientX - srcResizer._startX)));
+  const w = Math.max(260, Math.min(900, window.innerWidth - 60, srcDragStartW - (e.clientX - srcDragStartX)));
   $('#src').style.width = w + 'px';
   document.body.style.setProperty('--src-w', Math.round(w) + 'px'); // minimap 实时让位
 });
@@ -1607,13 +1763,13 @@ try {
 } catch (e) { /* 隐私模式忽略 */ }
 $('#btnUndo').onclick = undoExpand;
 // 子图过滤：按符号类型只显示匹配节点（中心节点始终显示），切换后立即重绘
-$('#graphKindFilter').addEventListener('change', () => {
-  graphKindFilter = $('#graphKindFilter').value;
+$form('#graphKindFilter').addEventListener('change', () => {
+  graphKindFilter = $form('#graphKindFilter').value;
   relayout();
 });
-$('#chkNoise').checked = showNoise;
-$('#chkNoise').addEventListener('change', () => {
-  showNoise = $('#chkNoise').checked;
+$input('#chkNoise').checked = showNoise;
+$input('#chkNoise').addEventListener('change', () => {
+  showNoise = $input('#chkNoise').checked;
   try { localStorage.setItem('cgv-noise', showNoise ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
   relayout();
   // 文件列表同样受「噪」影响，开关后一并刷新
@@ -1636,6 +1792,7 @@ document.addEventListener('click', (e) => {
   if (!t.closest || !t.closest('#exportMenu')) $('#exportMenu').classList.remove('show');
 });
 // 选项弹出层（搜索 ⚙ / 图 ✦）：点击按钮开合，点外部关闭
+/** @param {string} btnSel @param {string} popSel */
 function bindOptPop(btnSel, popSel) {
   const btn = $(btnSel), pop = $(popSel);
   btn.addEventListener('click', (e) => {
@@ -1653,10 +1810,14 @@ function bindOptPop(btnSel, popSel) {
 bindOptPop('#btnSearchOpts', '#searchOptsPop');
 bindOptPop('#btnGraphOpts', '#graphOptsPop');
 document.addEventListener('click', () => document.querySelectorAll('.optPop.show').forEach(p => p.classList.remove('show')));
-$('#exportMenu').querySelectorAll('button').forEach(b => b.onclick = () => {
+/** @type {Record<string, () => void>} 导出格式 → 导出函数 */
+const EXPORTERS = { svg: exportSVG, png: exportPNG, json: exportJSON, mermaid: exportMermaid };
+/** @type {HTMLElement[]} */ ([...$('#exportMenu').querySelectorAll('button')]).forEach(b => b.onclick = () => {
   $('#exportMenu').classList.remove('show');
-  ({ svg: exportSVG, png: exportPNG, json: exportJSON, mermaid: exportMermaid })[b.dataset.fmt]();
+  const fn = EXPORTERS[b.dataset.fmt || ''];
+  if (fn) fn();
 });
+/** @param {Blob} blob @param {string} filename */
 function download(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1728,9 +1889,11 @@ function exportJSON() {
 // Mermaid flowchart：可直接嵌入 Markdown 文档（限 200 边防爆）
 function exportMermaid() {
   if (!graph.centerKey || graph.nodes.size === 0) { notice('当前没有可导出的图'); return; }
+  /** @type {Map<string, string>} */
   const idOf = new Map();
   let seq = 0;
-  const nid = (key) => { if (!idOf.has(key)) idOf.set(key, 'n' + (seq++)); return idOf.get(key); };
+  /** @param {string} key @returns {string} */
+  const nid = (key) => { if (!idOf.has(key)) idOf.set(key, 'n' + (seq++)); return /** @type {string} */ (idOf.get(key)); };
   const lines = ['flowchart LR'];
   for (const n of graph.nodes.values()) {
     lines.push(`  ${nid(n.key)}["${n.name.replace(/"/g, "'")}"]`);
@@ -1750,7 +1913,7 @@ function exportMermaid() {
 $('#btnReindex').onclick = async () => {
   loading('正在重新索引，大项目可能需要几十秒…');
   try {
-    const data = await api('/reindex');
+    const data = /** @type {{ message?: string }} */ (await api('/reindex'));
     $('#staleBar').classList.remove('show');
     try { localStorage.removeItem('cgv-stale-dismissed'); } catch (e) { /* 忽略 */ }
     notice(data.message || '索引已更新');
@@ -1769,7 +1932,7 @@ $('#btnStaleDismiss').onclick = () => {
 // 索引过期检测：后端 watch 项目目录，有代码变更时提示重新索引
 async function checkStale() {
   try {
-    const s = await api('/status');
+    const s = /** @type {StatusResponse} */ (await api('/status'));
     if (s.root) projectRoot = s.root; // 顺手缓存项目根，供「在编辑器打开」拼绝对路径
     if (s.stale && !s.reindexing) {
       const text = s.staleFile
@@ -1789,11 +1952,14 @@ checkStale(); // 启动即拉一次：尽早拿到 root 与过期状态，不等
 setTimeout(checkStale, 3000);
 // 节点高亮搜索：匹配的节点保持清晰，其余降低透明度（关键词存起来，relayout 重建 DOM 后重放）
 let highlightKW = '';
-let hoverKey = null; // 当前 hover/点击的节点 key，非空时启用全链路高亮
-let clickKey = null; // 点击固定的高亮（优先级低于 hover）
+/** @type {string|null} 当前 hover 的节点 key，非空时启用全链路高亮 */
+let hoverKey = null;
+/** @type {string|null} 点击固定的高亮（优先级低于 hover） */
+let clickKey = null;
 // 全链路可达集：上游沿 callers 方向、下游沿 callees 方向分别 BFS 后取并集。
 // 注意必须是有向的——若用无向 BFS，中心是高扇出节点（如 getList 被 40 处调用）时，
 // 从任一 caller 出发会经中心反向把全部兄弟 caller 拉进来，高亮退化成全图。
+/** @param {string} key @returns {Set<string>} */
 function reachableSet(key) {
   const seen = new Set([key]);
   // 上游：谁调用了它（callers 方向）
@@ -1811,6 +1977,7 @@ function reachableSet(key) {
   return seen;
 }
 // 应用全链路高亮：链路内节点与连线清晰（opacity 1），其余节点/连线降为 0.15
+/** @param {string|null} key */
 function applyChainHighlight(key) {
   if (!key) { clearChainHighlight(); return; }
   const set = reachableSet(key);
@@ -1838,8 +2005,13 @@ function applyHighlight() {
 }
 // ===== 节点 Tooltip：悬停显示限定名、文件行号与高亮代码片段（/api/source，防抖 + 缓存） =====
 const nodeTip = $('#nodeTip');
+/** @type {ReturnType<typeof setTimeout>|null} */
 let tipTimer = null;
-let tipCache = new Map(); // file:line -> /api/source 结果，避免快速扫过时打爆接口
+/** @type {string|null} 当前浮层对应的节点 key（同一节点内移动只刷新位置，不重建内容） */
+let tipKey = null;
+/** @type {Map<string, SourceResponse>} file:line -> /api/source 结果，避免快速扫过时打爆接口 */
+let tipCache = new Map();
+/** @param {Element} el */
 function tipPosition(el) {
   const r = el.getBoundingClientRect();
   const tw = nodeTip.offsetWidth || 340, th = nodeTip.offsetHeight || 160;
@@ -1849,12 +2021,13 @@ function tipPosition(el) {
   nodeTip.style.left = Math.max(8, x) + 'px';
   nodeTip.style.top = Math.max(8, y) + 'px';
 }
+/** @param {string} key @param {Element} el */
 function showTip(key, el) {
   const node = graph.nodes.get(key);
   if (!node) return;
   clearTimeout(tipTimer);
-  if (nodeTip._key !== key) { // 同一节点内移动只刷新位置，不重建内容
-    nodeTip._key = key;
+  if (tipKey !== key) { // 同一节点内移动只刷新位置，不重建内容
+    tipKey = key;
     const kind = node.kind && KIND_LABEL[node.kind] ? `<span class="tip-kind">${esc(KIND_LABEL[node.kind])}</span>` : '';
     const file = node.file ? `<div class="tip-file">📄 ${esc(node.file)}${node.line ? ' : ' + node.line : ''}</div>` : '';
     nodeTip.innerHTML = `${kind}<div class="tip-name">${esc(node.label)}</div>${file}<pre class="tip-code"><span class="tip-loading">⏳ 加载代码片段…</span></pre>`;
@@ -1864,7 +2037,7 @@ function showTip(key, el) {
     else if (tipCache.has(cacheKey)) renderTipCode(node, tipCache.get(cacheKey));
     else tipTimer = setTimeout(async () => { // 防抖：短暂停留才拉取
       try {
-        const data = await api('/source', { file: node.file, line: node.line });
+        const data = /** @type {SourceResponse} */ (await api('/source', { file: node.file || '', line: String(node.line || 1) }));
         tipCache.set(cacheKey, data);
         if (hoverKey === key) { renderTipCode(node, data); tipPosition(el); }
       } catch { if (hoverKey === key) nodeTip.querySelector('.tip-code').innerHTML = '<span class="tip-empty">（加载失败）</span>'; }
@@ -1872,6 +2045,7 @@ function showTip(key, el) {
   }
   tipPosition(el);
 }
+/** @param {GNode} node @param {SourceResponse} data */
 function renderTipCode(node, data) {
   const pre = nodeTip.querySelector('.tip-code');
   if (!data || !data.snippet) { pre.innerHTML = '<span class="tip-empty">（无源码片段）</span>'; return; }
@@ -1883,6 +2057,7 @@ function renderTipCode(node, data) {
   }).join('');
 }
 // 轻量语法高亮：逐段 token 提取后分别转义，防 XSS 且不破坏引号匹配
+/** @param {string} line @returns {string} */
 function highlightLine(line) {
   const re = /(\/\/.*$|#(?!\[).*$)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d+\b)|(\b(?:function|class|const|let|var|return|if|else|for|while|new|public|private|protected|static|namespace|use|extends|implements|interface|type|import|export|async|await|try|catch|throw|this|readonly|int|string|bool|array|void|null|true|false|echo|require|include|switch|case|break|continue|instanceof|fn|struct|enum|match|func|def|self)\b)/g;
   let out = '', last = 0, m;
@@ -1899,7 +2074,7 @@ function highlightLine(line) {
 }
 function hideTip() {
   clearTimeout(tipTimer);
-  nodeTip._key = null;
+  tipKey = null;
   nodeTip.style.display = 'none';
 }
 
@@ -1907,6 +2082,7 @@ function hideTip() {
 // 优先 hover：鼠标在节点上时显示该节点全链路；移开后若有点击固定高亮则恢复之，否则清除。
 // 注意：click 不走委托——mkNode 的 onclick 里 e.stopPropagation() 会拦截冒泡，故在 onclick 内直接设 clickKey。
 // tooltip 可交互：离开节点后延迟收起，鼠标可移入代码块复制/滚动
+/** @type {ReturnType<typeof setTimeout>|null} */
 let leaveNodeTimer = null;
 function scheduleLeaveNode() {
   clearTimeout(leaveNodeTimer);
@@ -1919,7 +2095,7 @@ function scheduleLeaveNode() {
 }
 viewport.addEventListener('mouseover', (e) => {
   if (dragNode) return; // 拖动卡片时不触发悬停
-  const n = e.target.closest && e.target.closest('.node');
+  const n = /** @type {SVGElement|null} */ (closestEl(e, '.node'));
   if (n && n.dataset.key) {
     clearTimeout(leaveNodeTimer);
     if (hoverKey !== n.dataset.key) { hoverKey = n.dataset.key; applyChainHighlight(n.dataset.key); }
@@ -1927,19 +2103,20 @@ viewport.addEventListener('mouseover', (e) => {
   }
 });
 viewport.addEventListener('mouseout', (e) => {
-  const from = e.target.closest && e.target.closest('.node');
-  const to = e.relatedTarget && e.relatedTarget.closest ? e.relatedTarget.closest('.node') : null;
+  const from = /** @type {SVGElement|null} */ (closestEl(e, '.node'));
+  const to = e.relatedTarget instanceof Element ? e.relatedTarget.closest('.node') : null;
   if (!from || from === to) return;
   // 移入悬浮代码块：保持显示与高亮，由 tooltip 的 mouseleave 负责收起
-  const intoTip = e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('#nodeTip');
+  const intoTip = e.relatedTarget instanceof Element && e.relatedTarget.closest('#nodeTip');
   if (intoTip) return;
   scheduleLeaveNode();
 });
 nodeTip.addEventListener('mouseenter', () => clearTimeout(leaveNodeTimer));
 nodeTip.addEventListener('mouseleave', () => scheduleLeaveNode());
-$('#nodeHighlight').addEventListener('input', () => { highlightKW = $('#nodeHighlight').value; applyHighlight(); });
-$('#nodeHighlight').addEventListener('keydown', e => { if (e.key === 'Escape') { e.target.value = ''; highlightKW = ''; applyHighlight(); e.target.blur(); } });
+$input('#nodeHighlight').addEventListener('input', () => { highlightKW = $input('#nodeHighlight').value; applyHighlight(); });
+$input('#nodeHighlight').addEventListener('keydown', e => { if (e.key === 'Escape') { const t = /** @type {HTMLInputElement} */ (e.target); t.value = ''; highlightKW = ''; applyHighlight(); t.blur(); } });
 // 左侧面板折叠（与右侧源码面板对称）
+/** @param {boolean} c */
 function setLeftCollapsed(c) {
   document.body.classList.toggle('left-collapsed', c);
   $('#btnLeftToggle').textContent = c ? '›' : '‹';
@@ -1955,7 +2132,7 @@ document.addEventListener('keydown', e => {
   if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
   if (e.key === 'u' || e.key === 'U') undoExpand();
   else if (e.key === 'r' || e.key === 'R') $('#btnReset').click();
-  else if (e.key === '/') { e.preventDefault(); $('#q').focus(); }
+  else if (e.key === '/') { e.preventDefault(); $input('#q').focus(); }
   else if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomBy(1.25); }
   else if (e.key === '-' || e.key === '_') { e.preventDefault(); zoomBy(0.8); }
   else if (e.key === 'Escape') {
@@ -1968,7 +2145,7 @@ document.addEventListener('keydown', e => {
     const noticeEl = $('#notice');
     noticeEl.classList.remove('info');
     noticeEl.style.display = 'none';
-    $('#nodeHighlight').value = '';
+    $input('#nodeHighlight').value = '';
     highlightKW = '';
     hoverKey = null; clickKey = null;
     applyHighlight();
@@ -1987,7 +2164,7 @@ $('#btnReset').onclick = () => {
   $('#empty').style.display = 'flex';
   viewport.innerHTML = '';
   $('#minimap').style.display = 'none';
-  $('#fileFilter').value = '';
+  $form('#fileFilter').value = '';
   saveHash();
   fileListLimit = FILE_PAGE;
   renderFiles();
@@ -1997,6 +2174,7 @@ $('#btnReset').onclick = () => {
 // 主题：默认跟随系统（head 内脚本做首次设置，这里监听系统切换实时跟随）；
 // 用户手动切换后才记住选择（localStorage），之后不再跟随系统
 const themeMedia = matchMedia('(prefers-color-scheme: light)');
+/** @param {'light'|'dark'} t */
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
   $('#btnTheme').textContent = t === 'light' ? '🌙' : '☀️';

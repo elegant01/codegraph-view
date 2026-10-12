@@ -16,7 +16,7 @@ import { createRouteParser, matchRoute } from './lib/routes.ts';
 import { createUrlMapper } from './lib/urlmap.ts';
 import { createSymbolResolver } from './lib/sourcecalls.ts';
 import { traceChain } from './lib/trace.ts';
-import type { SymbolNode } from './lib/textparse.ts';
+import type { SymbolNode, QueryRow, NeighborsPayload } from './lib/textparse.ts';
 import type { TraceResult } from './lib/trace.ts';
 
 // ===== 接口契约类型（API 出参与内部结构；handler 签名也靠它们对齐）=====
@@ -54,9 +54,9 @@ const PKG = fileURLToPath(new URL('.', import.meta.url));
 let repoCache: RepoInfo[] | null = null;
 async function discoverRepos(): Promise<RepoInfo[]> {
   if (repoCache) return repoCache;
-  const found = [{ name: ROOT_NAME, path: '' }];
+  const found: RepoInfo[] = [{ name: ROOT_NAME, path: '' }];
   const ignored = new Set(['.git', '.codegraph', 'node_modules', 'vendor', 'dist', 'build', 'out', '.next', '.nuxt', '.idea', '.vscode', 'coverage']);
-  async function walk(dir, rel, depth) {
+  async function walk(dir: string, rel: string, depth: number): Promise<void> {
     if (depth > 8) return;
     let entries;
     try { entries = await readdir(dir, { withFileTypes: true }); } catch { return; }
@@ -98,7 +98,7 @@ const symbolResolver = createSymbolResolver({ run, root: ROOT });
 async function resolveBareFunc(name: string): Promise<SymbolNode | null> {
   if (!name || !/^[\w]+$/.test(name)) return null;
   const out = await run(['query', name, '--json', '-l', '10']);
-  const list = parseJson(out, []);
+  const list: QueryRow[] = parseJson(out, []);
   const hit = list.find(r => r.node && r.node.name === name && /func|method/.test(r.node.kind || ''))
     || list.find(r => r.node && /func|method/.test(r.node.kind || ''));
   return hit ? { name: hit.node.name, filePath: hit.node.filePath, startLine: hit.node.startLine, kind: hit.node.kind } : null;
@@ -115,16 +115,15 @@ function parseNodeLine(raw: unknown): number | null {
 // callers/callees --json 的结果带 kind（Trail 文本不带）。按 (filePath, name) 建索引回填，
 // 让节点卡片显示正确类型，并让前端的 interface/type 噪音过滤生效。
 function kindLookupFrom(...raws: unknown[]): Map<string, string> {
+  /** @type {Map<string, string>} */
   const map = new Map();
   for (const raw of raws) {
-    const parsed = parseJson(raw, null);
+    const parsed = parseJson<NeighborsPayload | null>(raw, null);
     if (!parsed) continue;
-    for (const key of ['callers', 'callees']) {
-      for (const c of parsed[key] || []) {
-        if (!c || !c.name) continue;
-        const k = normPath(c.filePath) + '::' + c.name;
-        if (c.kind && !map.has(k)) map.set(k, c.kind);
-      }
+    for (const c of [...(parsed.callers || []), ...(parsed.callees || [])]) {
+      if (!c || !c.name) continue;
+      const k = normPath(c.filePath) + '::' + c.name;
+      if (c.kind && !map.has(k)) map.set(k, c.kind);
     }
   }
   return map;
@@ -269,7 +268,7 @@ function invalidateAll(): void {
 
 // ===== 代码变更检测：watch 项目目录，提示「索引可能过期」 =====
 let indexStale = false;
-let staleFile = null;
+let staleFile: string | null = null;
 let reindexState = { running: false, lastAt: 0 };
 // Windows/网络盘上 fs.watch 会对「仅元数据变化」（atime/属性位/杀软扫描/同步工具）报 change，
 // mtime 也不可靠（实测存在 mtime 比当前时间还晚的脏数据）。改用内容哈希甄别：
@@ -300,7 +299,7 @@ setImmediate(() => {
   hashBaselineReady = true;
   console.log(`[watch] 哈希基线就绪：${fileHashes.size} 个源码文件，耗时 ${Date.now() - t0}ms`);});
 try {
-  let debounce = null;
+  let debounce: ReturnType<typeof setTimeout> | null = null;
   watch(ROOT, { recursive: true }, (event, filename) => {
     if (!filename || indexStale || reindexState.running) return;
     // 只有源码文件变更才提示过期——日志/缓存/IDE 文件变更不该惊动用户
@@ -330,7 +329,7 @@ const routeTable: RouteDef[] = [
   ...[
     '/api/search', '/api/graph', '/api/implementations', '/api/routes', '/api/route',
     '/api/reindex', '/api/urlmap', '/api/trace/stream', '/api/symbols', '/api/source', '/api/files',
-  ].map(path => ({ method: 'GET', path, handler: null })),
+  ].map((path): RouteDef => ({ method: 'GET', path, handler: null })),
   {
     method: 'GET', path: '/_health',
     handler: (req, res) => {
@@ -376,9 +375,9 @@ const server = createServer(async (req, res) => {
       if (cached) return json(req, res, 200, cached);
       // 搜索放宽超时并允许重试一次：大项目首次 query 要冷启动 codegraph，30s 不够
       const out = await run(['query', q, '--json', '-l', useRegex ? '200' : '40'], { timeout: 60000, retries: 1 });
-      let list = parseJson(out, []).map((r) => r.node);
+      let list: SymbolNode[] = parseJson(out, []).map((r: QueryRow) => r.node);
       // 去重：同一文件内重载/重写的同名符号只保留一个
-      const seen = new Set();
+      const seen = new Set<string>();
       list = list.filter(h => {
         const key = (h.filePath || '') + '::' + (h.qualifiedName || h.name);
         if (seen.has(key)) return false;
@@ -424,7 +423,7 @@ const server = createServer(async (req, res) => {
       if (!data) {
         if (file) {
           const nodeRaw = await run(['node', sym, '-f', file]);
-          const dropImport = (c) => c && !isImportRef(c.name);
+          const dropImport = (c: SymbolNode): boolean => !!(c && !isImportRef(c.name));
           data = {
             symbol: sym,
             kind: parseNodeKind(nodeRaw),
@@ -439,8 +438,8 @@ const server = createServer(async (req, res) => {
             run(['callees', sym, '--json', '-l', '40']),
             run(['node', sym]),
           ]);
-          const callers = parseJson(callersRaw, {}).callers || [];
-          const callees = parseJson(calleesRaw, {}).callees || [];
+          const callers = parseJson<NeighborsPayload>(callersRaw, {}).callers || [];
+          const callees = parseJson<NeighborsPayload>(calleesRaw, {}).callees || [];
           data = { symbol: sym, kind: parseNodeKind(nodeRaw), line: parseNodeLine(nodeRaw), callers, callees, source: nodeRaw };
         }
         cacheSet(graphCache, gkey, data, 300);
@@ -453,7 +452,7 @@ const server = createServer(async (req, res) => {
       if (file) {
         const kinds = await kindsFor(sym);
         if (kinds && kinds.size) {
-          const withKind = (c) => ({ ...c, kind: kinds.get(normPath(c.filePath) + '::' + c.name) || c.kind });
+          const withKind = (c: SymbolNode): SymbolNode => ({ ...c, kind: kinds.get(normPath(c.filePath) + '::' + c.name) || c.kind });
           return json(req, res, 200, { ...data, callers: data.callers.map(withKind), callees: data.callees.map(withKind) });
         }
       }
@@ -564,7 +563,7 @@ const server = createServer(async (req, res) => {
       res.write(': ok\n\n');
       let closed = false;
       req.on('close', () => { closed = true; });
-      const send = (event, data) => { if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+      const send = (event: string, data: unknown): void => { if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
       // 链路展开要跑几十次 CLI（实测单次 5s 起），同一组参数重复展开直接回放结果。
       // 取消产生的部分结果不缓存（它取决于断开时机，不该被当成完整链路复用）。
       const tkey = [sym, file, depth, maxNodes, direction].join('|');
