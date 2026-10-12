@@ -48,7 +48,7 @@ async function getTraceStream(port, query, timeoutMs = 90000) {
       if (line.startsWith('event:')) event = line.slice(6).trim();
       else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
       else if (!line.trim() && data.length) {
-        let parsed = data.join('\n');
+        let parsed = /** @type {any} */ (data.join('\n'));
         try { parsed = JSON.parse(parsed); } catch { /* 保留原始事件数据 */ }
         events.push({ event, data: parsed });
         event = 'message';

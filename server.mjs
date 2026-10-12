@@ -62,7 +62,7 @@ const READ_ONLY = argv.includes('--read-only');
 const { run, useBundled } = createRunner({ root: ROOT, pkgDir: PKG });
 const routeParser = createRouteParser({ root: ROOT, run });
 const urlMapper = createUrlMapper({ root: ROOT });
-const symbolResolver = createSymbolResolver({ run });
+const symbolResolver = createSymbolResolver({ run, root: ROOT });
 
 // gin 包级处理器（如 controllers.Add）：按名查询，取第一个 function/method 符号
 async function resolveBareFunc(name) {
@@ -72,6 +72,32 @@ async function resolveBareFunc(name) {
   const hit = list.find(r => r.node && r.node.name === name && /func|method/.test(r.node.kind || ''))
     || list.find(r => r.node && /func|method/.test(r.node.kind || ''));
   return hit ? { name: hit.node.name, filePath: hit.node.filePath, startLine: hit.node.startLine, kind: hit.node.kind } : null;
+}
+
+const normPath = (p) => String(p || '').replace(/\\/g, '/');
+
+// 从 `codegraph node` 输出提取 Location 行号（Trail 文本不含 kind，但 Location 带行号）
+function parseNodeLine(raw) {
+  const m = String(raw).match(/\*\*Location:\*\*\s*\S*?:(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+// callers/callees --json 的结果带 kind（Trail 文本不带）。按 (filePath, name) 建索引回填，
+// 让节点卡片显示正确类型，并让前端的 interface/type 噪音过滤生效。
+function kindLookupFrom(...raws) {
+  const map = new Map();
+  for (const raw of raws) {
+    const parsed = parseJson(raw, null);
+    if (!parsed) continue;
+    for (const key of ['callers', 'callees']) {
+      for (const c of parsed[key] || []) {
+        if (!c || !c.name) continue;
+        const k = normPath(c.filePath) + '::' + c.name;
+        if (c.kind && !map.has(k)) map.set(k, c.kind);
+      }
+    }
+  }
+  return map;
 }
 
 const MIME = {
@@ -97,9 +123,11 @@ function json(req, res, code, obj) {
 
 // ===== 短 TTL 缓存（搜索结果 / 文件列表），reindex 时失效 =====
 // 索引过期（stale）时 TTL 减半：改码后旧结果更快让位，同时避免完全禁缓存打爆 CLI
-const TTL_SEARCH = 20000, TTL_FILES = 30000;
+const TTL_SEARCH = 20000, TTL_FILES = 30000, TTL_GRAPH = 30000, TTL_TRACE = 60000;
 const staleFactor = () => (indexStale ? 0.5 : 1);
 const searchCache = new Map(); // key -> { at, data }
+const graphCache = new Map();  // symbol|file -> { at, data }（点节点/展开都走它）
+const traceCache = new Map();  // symbol|file|depth|maxNodes|direction -> { at, data }
 const filesCache = { at: 0, data: null };
 function cacheGet(map, key, ttl) {
   const e = map.get(key);
@@ -110,9 +138,42 @@ function cacheSet(map, key, data, cap = 100) {
   if (map.size >= cap) map.delete(map.keys().next().value);
   map.set(key, { at: Date.now(), data });
 }
+// 文件符号列表：`node -f <file> --symbols-only` 实测大文件要几十秒（nextjs-app 单文件 28s），
+// 必须缓存；同文件并发请求合流，避免双击/多入口同时触发重复跑 CLI。
+const TTL_SYMBOLS = 60000;
+const symbolsCache = new Map();    // file -> { at, data }
+const symbolsInflight = new Map(); // file -> Promise<data>
+function loadSymbols(file) {
+  const hit = cacheGet(symbolsCache, file, TTL_SYMBOLS * staleFactor());
+  if (hit) return Promise.resolve(hit);
+  const running = symbolsInflight.get(file);
+  if (running) return running;
+  const p = (async () => {
+    try {
+      const out = await run(['node', '-f', file, '--symbols-only']);
+      const symbols = [];
+      for (const m of out.matchAll(/^- `([^`]+)` \(([^)]+)\)(?:.*?) — :(\d+)$/gm)) {
+        symbols.push({ name: m[1], kind: m[2], line: Number(m[3]) });
+      }
+      // codegraph 符号表硬上限 200，超出时输出 `- … +N more`；透出给前端提示
+      const more = out.match(/^- … \+(\d+) more$/m);
+      const data = { file, symbols, total: more ? symbols.length + Number(more[1]) : symbols.length, truncated: !!more };
+      cacheSet(symbolsCache, file, data, 300);
+      return data;
+    } finally {
+      symbolsInflight.delete(file); // 失败也要清，下次重试而不是把错误也缓存住
+    }
+  })();
+  symbolsInflight.set(file, p);
+  return p;
+}
+
 function invalidateAll() {
   searchCache.clear();
+  graphCache.clear();
+  traceCache.clear();
   filesCache.at = 0; filesCache.data = null;
+  symbolsCache.clear();
   routeParser.invalidate();
   urlMapper.invalidate();
   symbolResolver.clear();
@@ -195,6 +256,7 @@ const routeTable = [
     handler: (req, res) => json(req, res, 200, {
       stale: indexStale, staleFile, reindexing: reindexState.running,
       bundled: useBundled, exposed: EXPOSED, readOnly: READ_ONLY,
+      root: ROOT, // 前端用它把相对路径补成绝对路径（vscode://file/ 打开文件）
     }),
   },
 ];
@@ -224,7 +286,8 @@ const server = createServer(async (req, res) => {
       const cacheKey = q + '|' + (kind || '') + '|' + (useRegex ? 're' : '');
       const cached = cacheGet(searchCache, cacheKey, TTL_SEARCH * staleFactor());
       if (cached) return json(req, res, 200, cached);
-      const out = await run(['query', q, '--json', '-l', useRegex ? '200' : '40']);
+      // 搜索放宽超时并允许重试一次：大项目首次 query 要冷启动 codegraph，30s 不够
+      const out = await run(['query', q, '--json', '-l', useRegex ? '200' : '40'], { timeout: 60000, retries: 1 });
       let list = parseJson(out, []).map((r) => r.node);
       // 去重：同一文件内重载/重写的同名符号只保留一个
       const seen = new Set();
@@ -265,24 +328,43 @@ const server = createServer(async (req, res) => {
       const sym = safeArg(url.searchParams.get('symbol'));
       if (!sym) return json(req, res, 400, { error: 'missing ?symbol=' });
       const file = safeFile((url.searchParams.get('file') || '').trim());
+      // 缓存：点同一个节点、展开→撤销→再展开都会重复请求同一个 (symbol,file)，
+      // 每次都要跑 1–3 次 CLI，命中后基本免费（TTL 30s，stale 减半，reindex 失效）
+      const gkey = sym + '|' + file;
+      const ghit = cacheGet(graphCache, gkey, TTL_GRAPH * staleFactor());
+      if (ghit) return json(req, res, 200, ghit);
+      let data;
       if (file) {
-        const nodeRaw = await run(['node', sym, '-f', file]);
+        // Trail 文本只有 name/file/line，没有 kind。并行拉一份 --json（带 kind）按
+        // (filePath,name) 回填；这两次是可选增强，给短超时且失败即放弃，绝不拖慢主结果。
+        const [nodeRaw, callersRaw, calleesRaw] = await Promise.all([
+          run(['node', sym, '-f', file]),
+          run(['callers', sym, '--json', '-l', '40'], { timeout: 15000 }).catch(() => ''),
+          run(['callees', sym, '--json', '-l', '40'], { timeout: 15000 }).catch(() => ''),
+        ]);
+        const kinds = kindLookupFrom(callersRaw, calleesRaw);
         const dropImport = (c) => c && !isImportRef(c.name);
-        return json(req, res, 200, {
+        const withKind = (c) => ({ ...c, kind: kinds.get(normPath(c.filePath) + '::' + c.name) || null });
+        data = {
           symbol: sym,
-          callers: parseTrail(nodeRaw, 'Called by ←').filter(dropImport),
-          callees: parseTrail(nodeRaw, 'Calls →').filter(dropImport),
+          kind: parseNodeKind(nodeRaw),
+          line: parseNodeLine(nodeRaw),
+          callers: parseTrail(nodeRaw, 'Called by ←').filter(dropImport).map(withKind),
+          callees: parseTrail(nodeRaw, 'Calls →').filter(dropImport).map(withKind),
           source: nodeRaw,
-        });
+        };
+      } else {
+        const [callersRaw, calleesRaw, nodeRaw] = await Promise.all([
+          run(['callers', sym, '--json', '-l', '40']),
+          run(['callees', sym, '--json', '-l', '40']),
+          run(['node', sym]),
+        ]);
+        const callers = parseJson(callersRaw, {}).callers || [];
+        const callees = parseJson(calleesRaw, {}).callees || [];
+        data = { symbol: sym, kind: parseNodeKind(nodeRaw), line: parseNodeLine(nodeRaw), callers, callees, source: nodeRaw };
       }
-      const [callersRaw, calleesRaw, nodeRaw] = await Promise.all([
-        run(['callers', sym, '--json', '-l', '40']),
-        run(['callees', sym, '--json', '-l', '40']),
-        run(['node', sym]),
-      ]);
-      const callers = parseJson(callersRaw, {}).callers || [];
-      const callees = parseJson(calleesRaw, {}).callees || [];
-      return json(req, res, 200, { symbol: sym, callers, callees, source: nodeRaw });
+      cacheSet(graphCache, gkey, data, 300);
+      return json(req, res, 200, data);
     }
     // 查找接口/抽象方法的实现：查询同名候选，返回 class/method/function 实现项
     if (path === '/api/implementations') {
@@ -390,12 +472,18 @@ const server = createServer(async (req, res) => {
       let closed = false;
       req.on('close', () => { closed = true; });
       const send = (event, data) => { if (!closed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+      // 链路展开要跑几十次 CLI（实测单次 5s 起），同一组参数重复展开直接回放结果。
+      // 取消产生的部分结果不缓存（它取决于断开时机，不该被当成完整链路复用）。
+      const tkey = [sym, file, depth, maxNodes, direction].join('|');
+      const thit = cacheGet(traceCache, tkey, TTL_TRACE * staleFactor());
+      if (thit) { send('result', thit); if (!closed) res.end(); return; }
       try {
         const result = await traceChain({ run, root: ROOT, resolveSourceCalls: symbolResolver.resolveSourceCalls }, sym, file, {
           depth, maxNodes, direction,
           isCancelled: () => closed,
           onProgress: (p) => send('progress', p),
         });
+        if (!result.cancelled) cacheSet(traceCache, tkey, result, 50);
         send('result', result);
       } catch (e) {
         send('error', { error: String((e && e.message) || e) });
@@ -403,19 +491,11 @@ const server = createServer(async (req, res) => {
       if (!closed) res.end();
       return;
     }
-    // 文件内的符号列表
+    // 文件内的符号列表（60s 缓存 + 同文件并发合流，见 loadSymbols）
     if (path === '/api/symbols') {
       const file = safeFile((url.searchParams.get('file') || '').trim());
       if (!file) return json(req, res, 400, { error: 'missing or invalid ?file=' });
-      const out = await run(['node', '-f', file, '--symbols-only']);
-      const symbols = [];
-      for (const m of out.matchAll(/^- `([^`]+)` \(([^)]+)\)(?:.*?) — :(\d+)$/gm)) {
-        symbols.push({ name: m[1], kind: m[2], line: Number(m[3]) });
-      }
-      // codegraph 符号表硬上限 200，超出时输出 `- … +N more`；透出给前端提示
-      const more = out.match(/^- … \+(\d+) more$/m);
-      const total = more ? symbols.length + Number(more[1]) : symbols.length;
-      return json(req, res, 200, { file, symbols, total, truncated: !!more });
+      return json(req, res, 200, await loadSymbols(file));
     }
     // 源码片段（节点悬停预览）：file + line，返回该行 ±8 行
     if (path === '/api/source') {
@@ -471,7 +551,7 @@ const server = createServer(async (req, res) => {
     json(req, res, 500, { error: String((e && e.message) || e) });
   }
 });
-server.on('error', (e) => {
+server.on('error', (/** @type {NodeJS.ErrnoException} */ e) => {
   if (e && e.code === 'EADDRINUSE') {
     console.log(`[错误] 端口 ${PORT} 已被占用，换个端口重试，例如: cgv view ${PORT + 1}`);
   } else {
@@ -489,7 +569,8 @@ server.listen(PORT, HOST, async () => {
     if (EXPOSED) console.log(`[警告] 服务绑定在 ${HOST}，局域网/外部可访问本机源码与接口，仅在可信网络使用`);
     if (READ_ONLY) console.log('[只读模式] reindex 接口已禁用，适合部署到公共地址分享');
   }
-  // 启动探测：确认 codegraph 可用并记录版本（输出格式漂移告警见 textparse.warnIfFormatDrift）
+  // 启动探测：确认 codegraph 可用并记录版本。
+  // 注意：输出格式漂移告警（textparse.warnIfFormatDrift）只在链路展开解析时触发，不在这里。
   try {
     const v = (await run(['--version'], { timeout: 10000 })).trim().split('\n')[0];
     if (v && !JSON_OUT) console.log(`codegraph: ${v}${useBundled ? ' (bundled)' : ' (PATH)'}`);

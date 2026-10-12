@@ -299,6 +299,9 @@
   .file.open .caret { transform: rotate(90deg); color: var(--accent); }
   .file .cnt { flex: 0 0 auto; color: var(--caller); font-size: 11px; min-width: 30px; text-align: right; font-weight: 600; }
   .file .path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 文件列表「显示更多」：分页加载，替代原来硬切 200 个 */
+  .file-more { padding: 9px 11px; margin: 4px 0; font-size: 12px; color: var(--accent); text-align: center; cursor: pointer; border-radius: 6px; border: 1px dashed var(--border-light); }
+  .file-more:hover { background: var(--panel-2); }
   /* 文件行内展开的符号列表：缩进 + 左侧引导线 */
   .file-syms { margin: 2px 4px 8px 20px; padding-left: 10px; border-left: 2px solid var(--border); }
   .file-syms .hit { padding: 7px 10px; margin-bottom: 3px; font-size: 12px; }
@@ -388,7 +391,7 @@
   #notice { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); background: #4a2d1a; border: 1px solid #ffa657; color: #ffb86a; padding: 8px 16px; border-radius: 8px; font-size: 13px; display: none; z-index: 30; max-width: 80%; }
   #notice.info { background: var(--accent-dim); border-color: var(--accent); color: #cfe5ff; }
   #moreBadge { position: absolute; right: 16px; bottom: 148px; background: var(--panel); border: 1px solid var(--border); color: var(--text-2); padding: 4px 10px; border-radius: 8px; font-size: 12px; display: none; cursor: pointer; z-index: 25; box-shadow: 0 0 8px rgba(0,0,0,.3); }
-  #moreBadge:hover { border-color: var(--accent); color: var(--text-1); }
+  #moreBadge:hover { border-color: var(--accent); color: var(--text); }
   /* 节点悬停代码预览 Tooltip（HTML 浮层，可移入复制/滚动代码，离开节点后延迟收起） */
   #nodeTip {
     position: fixed; display: none; width: 340px; max-width: 90vw;

@@ -11,8 +11,6 @@ const PROJECTS = [
   { name: 'php-admin', root: 'F:\\projects\\php-admin', port: 5213 },
   { name: 'chat-app', root: 'F:\\projects\\chat-app', port: 5214 },
 ];
-const TOP_N = 12;
-
 async function get(port, path, timeoutMs = 90000) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);

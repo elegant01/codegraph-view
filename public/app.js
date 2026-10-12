@@ -14,11 +14,30 @@ const KIND_GLYPH = { function:'ƒ', method:'M', class:'C', interface:'I', type:'
 
 // ===== 图数据模型（支持多级展开）=====
 const SEP = '';
+// SEP 是边键 a↔b 的分隔符（字面控制字符，避免与文件路径/符号名冲突），
+// 用 '\x01' 拼 key 再由 indexOf 拆回两端：改动它必须同步检查 addEdge / relayout /
+// drawMinimap / exportJSON / findPath / restoreSnapshot 里的拆分逻辑。
 const graph = { nodes: new Map(), edges: new Set(), centerKey: null };
 const history = [];
 const expandStack = []; // 展开撤销栈：每次点击节点展开前保存图快照
 let allFiles = [];
 let repoList = [];
+let projectRoot = ''; // 项目根绝对路径（/api/status 提供），把相对 file 补成绝对路径用
+async function ensureRoot() {
+  if (projectRoot) return projectRoot;
+  try { const s = await api('/status'); projectRoot = s.root || ''; } catch { /* 取不到就退回相对路径 */ }
+  return projectRoot;
+}
+// VS Code 的 vscode://file/ 只认绝对路径（Windows 盘符小写更稳），
+// 后端返回的 file 相对项目根，必须拼 root；空格等交给 encodeURI（: 和 / 不会被编码）。
+function vscodeUrl(file, line, root) {
+  let p = String(file || '').replace(/\\/g, '/');
+  if (!/^[A-Za-z]:\//.test(p) && !p.startsWith('/') && root) {
+    p = String(root).replace(/\\/g, '/').replace(/\/+$/, '') + '/' + p;
+  }
+  p = p.replace(/^([A-Za-z]):/, (_, d) => d.toLowerCase() + ':');
+  return `vscode://file/${encodeURI(p)}:${line || 1}`;
+}
 let viewTransform = { x: 0, y: 0, k: 1 };
 async function loadRepos() {
   try { repoList = await api('/repos'); } catch { repoList = []; }
@@ -27,9 +46,6 @@ function repoForFile(file) {
   const path = String(file || '').replace(/\\/g, '/').replace(/^\.?\//, '');
   const repo = repoList.find(r => !r.path || path === r.path || path.startsWith(r.path + '/'));
   return repo ? repo.name : '';
-}
-function annotateRepos() {
-  for (const node of graph.nodes.values()) node.repo = repoForFile(node.file);
 }
 let expanding = false;
 let showNoise = false; // 噪音节点开关：默认关闭=过滤不显示，打开=全部显示
@@ -57,8 +73,16 @@ function shouldShow(key) {
 function nodeKey(name, file) { return (file ? file + '::' : '') + name; }
 function addNode(name, file, kind, line) {
   const key = nodeKey(name, file);
-  if (!graph.nodes.has(key)) graph.nodes.set(key, { key, name, label: name, query: name, file, kind, line: line || null, repo: repoForFile(file), expanded: false });
-  return graph.nodes.get(key);
+  let n = graph.nodes.get(key);
+  if (!n) {
+    n = { key, name, label: name, query: name, file, kind: kind || null, line: line || null, repo: repoForFile(file), expanded: false };
+    graph.nodes.set(key, n);
+    return n;
+  }
+  // 回填：首次入图可能只拿到 Trail（无 kind/line），后续请求带回更完整信息时补上
+  if (!n.kind && kind) n.kind = kind;
+  if (!n.line && line) n.line = line;
+  return n;
 }
 // 邻接表：addEdge 时同步维护，callersOf/calleesOf 由 O(n) 全边扫描降为 O(1) 取表
 const adjIn = new Map();  // key -> Set<callerKey>
@@ -87,20 +111,21 @@ function badge(kind) {
   return `<span class="badge k-${KIND_CLASS[kind] || 'property'}">${esc(label)}</span>`;
 }
 
+let noticeTimer = null; // 报错自动消失定时器（与 loading 态互斥）
 function notice(msg) {
   const el = $('#notice');
   el.classList.remove('info');
   if (!msg) { el.style.display = 'none'; return; }
   el.textContent = msg;
   el.style.display = 'block';
-  clearTimeout(notice._t);
-  notice._t = setTimeout(() => { el.style.display = 'none'; }, 4500);
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { el.style.display = 'none'; }, 4500);
 }
 // 加载提示：一直显示直到 clearLoading()，区别于会自动消失的报错
 let progressTimer = null; // 顶部进度条递增定时器
 function loading(msg) {
   const el = $('#notice');
-  clearTimeout(notice._t);
+  clearTimeout(noticeTimer);
   el.classList.add('info');
   el.textContent = '⏳ ' + msg;
   el.style.display = 'block';
@@ -139,7 +164,9 @@ async function api(path, params, opts) {
 }
 
 // ===== 缩放/平移 =====
-function applyTransform() { viewport.setAttribute('transform', `translate(${viewTransform.x.toFixed(2)}, ${viewTransform.y.toFixed(2)}) scale(${viewTransform.k.toFixed(4)})`); }
+function applyTransformBase() { viewport.setAttribute('transform', `translate(${viewTransform.x.toFixed(2)}, ${viewTransform.y.toFixed(2)}) scale(${viewTransform.k.toFixed(4)})`); }
+// 视口变化的唯一入口：改完后同步 minimap 的视口框（原先靠事后重赋值 applyTransform，TS 不允许）
+function applyTransform() { applyTransformBase(); drawMinimap(); }
 function updateZoomLevel() { $('#zoomLevel').textContent = Math.round(viewTransform.k * 100) + '%'; }
 function resetView() { viewTransform = { x: 0, y: 0, k: 1 }; applyTransform(); updateZoomLevel(); }
 function zoomBy(factor, cx, cy) {
@@ -187,7 +214,7 @@ function clientToGraph(e) {
 function updateNodeEdges(key) {
   if (!lastLayout || !lastLayout.boxes) return;
   const sel = `.edge[data-a="${CSS.escape(key)}"], .edge[data-b="${CSS.escape(key)}"]`;
-  document.querySelectorAll(sel).forEach(el => {
+  /** @type {SVGElement[]} */ ([...document.querySelectorAll(sel)]).forEach(el => {
     const pa = lastLayout.pos.get(el.dataset.a), pb = lastLayout.pos.get(el.dataset.b);
     const ba = lastLayout.boxes.get(el.dataset.a), bb = lastLayout.boxes.get(el.dataset.b);
     if (!pa || !pb || !ba || !bb) return;
@@ -552,7 +579,7 @@ async function startGraph(query, name, file) {
     const data = await api('/graph', file ? { symbol: query, file } : { symbol: query });
     graph.nodes.clear(); clearGraphEdges(); posOverride.clear();
     expandStack.length = 0;
-    const center = addNode(name, file || null, null);
+    const center = addNode(name, file || null, data.kind, data.line);
     center.query = query;
     center.expanded = true;
     graph.centerKey = center.key;
@@ -579,7 +606,7 @@ function cancelTrace(silent) {
 }
 function traceLoading(msg) {
   const el = $('#notice');
-  clearTimeout(notice._t);
+  clearTimeout(noticeTimer);
   el.classList.add('info');
   el.innerHTML = '⏳ ' + esc(msg) + ' <button class="secondary cancel-trace" id="btnCancelTrace">取消</button>';
   el.style.display = 'block';
@@ -649,9 +676,10 @@ function startTrace(query, name, file, direction = 'down') {
   es.addEventListener('error', (e) => {
     if (settled) return;
     settled = true;
-    // 服务端业务错误以 error 事件下发；连接级错误 EventSource 会自动重试，这里只在有数据时报错
-    if (e.data) {
-      try { notice('全链路展开失败：' + (JSON.parse(e.data).error || '未知错误')); }
+    // 服务端业务错误以 error 事件下发（带 data）；连接级错误 EventSource 会自动重试，这里只在有数据时报错
+    const ev = /** @type {MessageEvent} */ (e); // EventSource 的 error 事件类型里没有 data，业务错误时才有
+    if (ev.data) {
+      try { notice('全链路展开失败：' + (JSON.parse(ev.data).error || '未知错误')); }
       catch { notice('全链路展开失败'); }
     } else if (es.readyState === EventSource.CLOSED) {
       notice('全链路展开失败：连接中断');
@@ -672,12 +700,15 @@ function recenter(key, symbol, file) {
 function snapshotGraph() {
   const nodes = new Map();
   for (const [k, n] of graph.nodes) nodes.set(k, { ...n });
-  return { nodes, edges: new Set(graph.edges), centerKey: graph.centerKey };
+  // 手工拖动的摆放位置也要快照，否则撤销只是回退了图，节点却停在拖动后的位置
+  return { nodes, edges: new Set(graph.edges), centerKey: graph.centerKey, posOverride: new Map(posOverride) };
 }
 function restoreSnapshot(snap) {
   graph.nodes = snap.nodes;
   graph.edges = snap.edges;
   graph.centerKey = snap.centerKey;
+  posOverride.clear();
+  for (const [k, v] of snap.posOverride || []) posOverride.set(k, v);
   // 快照只存了边集合，邻接索引需按边集重建
   adjIn.clear(); adjOut.clear();
   for (const e of graph.edges) {
@@ -1084,9 +1115,6 @@ $('#minimap').addEventListener('click', (e) => {
   viewTransform.y = vb.y + (rect.height / 2 - offY) / svb - py * viewTransform.k;
   applyTransform();
 });
-// 视口变化时同步 minimap 视口框（包装 applyTransform，避免到处改调用点）
-const _applyTransform = applyTransform;
-applyTransform = function () { _applyTransform(); drawMinimap(); };
 
 // ===== 节点右键菜单：以此为中心 / 展开下层 / 展开上层 / 复制路径 / 在编辑器打开 =====
 const ctxMenu = $('#ctxMenu');
@@ -1101,7 +1129,7 @@ function showCtx(key, x, y) {
     !isCenter && { label: '⤴ 展开上层（调用它的）', act: () => expandCallers(key) },
     { sep: true },
     node.file && { label: '⧉ 复制文件路径', act: () => copyText(node.file, '已复制路径') },
-    node.file && { label: '↗ 在编辑器打开', act: () => { window.open(`vscode://file/${node.file.replace(/\\/g, '/')}:${node.line || 1}`); } },
+    node.file && { label: '↗ 在编辑器打开', act: async () => { window.open(vscodeUrl(node.file, node.line, await ensureRoot())); } },
   ].filter(Boolean);
   ctxMenu.innerHTML = items.map((it, i) => it.sep ? '<div class="ctx-sep"></div>' : `<div class="ctx-item" data-i="${i}">${it.label}</div>`).join('');
   ctxMenu.querySelectorAll('.ctx-item').forEach(el => { el.onclick = () => { hideCtx(); items[Number(el.dataset.i)].act(); }; });
@@ -1200,7 +1228,8 @@ async function loadFiles() {
   try {
     allFiles = await api('/files');
     renderFiles();
-    $('#fileFilter').addEventListener('input', renderFiles);
+    // 换关键词时回到第一页，避免沿用上次「显示更多」的展开量
+    $('#fileFilter').addEventListener('input', () => { fileListLimit = FILE_PAGE; renderFiles(); });
     // PHP/Laravel 项目：默认显示接口/路由列表（按文件分组）
     const hasRoutes = allFiles.some(f => /Routes?\//.test(f.path || ''));
     if (hasRoutes) showRouteList();
@@ -1247,19 +1276,27 @@ async function showRouteList() {
     clearLoading();
   } catch (e) { clearLoading(); }
 }
+const FILE_PAGE = 200; // 文件列表每页条数，点「显示更多」继续加载
+let fileListLimit = FILE_PAGE;
 function renderFiles() {
   const filter = $('#fileFilter').value.trim().toLowerCase();
-  const list = allFiles
-    .filter(f => f.nodeCount > 0 && (!filter || f.path.toLowerCase().includes(filter)))
-    .sort((a, b) => b.nodeCount - a.nodeCount)
-    .slice(0, 200);
-  $('#fileList').innerHTML = list.length
+  const matched = allFiles
+    // 噪音文件（.min.js / node_modules / dist 等）默认隐藏，否则压缩 SDK 会长期霸占列表头部；
+    // 复用画布那个「噪」开关，语义与节点过滤保持一致
+    .filter(f => f.nodeCount > 0 && (showNoise || !isNoise({ file: f.path })) && (!filter || f.path.toLowerCase().includes(filter)))
+    .sort((a, b) => b.nodeCount - a.nodeCount);
+  const list = matched.slice(0, fileListLimit);
+  const more = matched.length - list.length;
+  $('#fileList').innerHTML = (list.length
     ? list.map(f =>
       `<div class="file" data-path="${escAttr(f.path)}" title="该文件含 ${f.nodeCount} 个符号，点击就地展开">
          <span class="caret">›</span><span class="cnt">${f.nodeCount}</span><span class="path">${esc(f.path)}</span>
        </div>`).join('')
-    : '<div class="hit">没有匹配的文件</div>';
+    : '<div class="hit">没有匹配的文件</div>')
+    + (more > 0 ? `<div class="file-more">显示更多（还有 ${more} 个）</div>` : '');
   $('#fileList').querySelectorAll('.file').forEach(el => el.onclick = () => toggleFileSymbols(el, el.dataset.path));
+  const moreEl = $('#fileList').querySelector('.file-more');
+  if (moreEl) moreEl.onclick = () => { fileListLimit += FILE_PAGE; renderFiles(); };
   updateHeaderInfo(`共 ${allFiles.length} 个文件 · 显示 ${list.length} 个`);
 }
 // 文件行内手风琴：点击文件就地展开/收起它的符号列表，文件列表始终可见（不再整页切换走）
@@ -1579,6 +1616,8 @@ $('#chkNoise').addEventListener('change', () => {
   showNoise = $('#chkNoise').checked;
   try { localStorage.setItem('cgv-noise', showNoise ? '1' : '0'); } catch (e) { /* 隐私模式忽略 */ }
   relayout();
+  // 文件列表同样受「噪」影响，开关后一并刷新
+  if (allFiles.length) { fileListLimit = FILE_PAGE; renderFiles(); }
 });
 // 大图角标：点击切换「显示全部 / 精简渲染」，并重置视图让新增节点可见
 $('#moreBadge').onclick = () => { renderAllNodes = !renderAllNodes; relayout(); resetView(); };
@@ -1593,7 +1632,8 @@ $('#btnExport').onclick = (e) => {
   m.classList.add('show');
 };
 document.addEventListener('click', (e) => {
-  if (!e.target.closest || !e.target.closest('#exportMenu')) $('#exportMenu').classList.remove('show');
+  const t = /** @type {Element} */ (e.target);
+  if (!t.closest || !t.closest('#exportMenu')) $('#exportMenu').classList.remove('show');
 });
 // 选项弹出层（搜索 ⚙ / 图 ✦）：点击按钮开合，点外部关闭
 function bindOptPop(btnSel, popSel) {
@@ -1625,16 +1665,31 @@ function download(blob, filename) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+// 收集页面样式。样式已抽到外部 style.css，页面里没有 <style> 元素，
+// 必须从 document.styleSheets.cssRules 序列化（同源可读），否则导出图完全无样式。
+function collectPageCSS() {
+  let css = '';
+  for (const sheet of document.styleSheets) {
+    let rules;
+    try { rules = sheet.cssRules; } catch { continue; } // 跨域样式表读不到，跳过
+    if (!rules) continue;
+    for (const rule of rules) { try { css += rule.cssText + '\n'; } catch { /* 个别规则序列化失败则跳过 */ } }
+  }
+  return css;
+}
 function buildSVGString() {
   const svgEl = document.getElementById('svg');
-  const styles = Array.from(document.querySelectorAll('style')).map(s => s.textContent).join('\n');
-  const clone = svgEl.cloneNode(true);
-  clone.setAttribute('width', svgEl.clientWidth);
-  clone.setAttribute('height', svgEl.clientHeight);
+  const w = svgEl.clientWidth, h = svgEl.clientHeight;
+  const clone = /** @type {SVGSVGElement} */ (svgEl.cloneNode(true));
+  clone.setAttribute('width', String(w));
+  clone.setAttribute('height', String(h));
+  // 独立 SVG 文档里 :root 就是 <svg> 本身：带上 data-theme，浅色主题的变量覆盖才同样生效
+  clone.setAttribute('data-theme', document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark');
   const styleEl = document.createElementNS(NS, 'style');
-  styleEl.textContent = styles;
+  // 追加背景：SVG 导出没有 PNG 的底色填充，没这条在浅色查看器里会看不清
+  styleEl.textContent = collectPageCSS() + '\nsvg { background: var(--bg); }';
   clone.insertBefore(styleEl, clone.firstChild);
-  return { str: '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone), w: svgEl.clientWidth, h: svgEl.clientHeight };
+  return { str: '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone), w, h };
 }
 function exportSVG() {
   if (!graph.centerKey || graph.nodes.size === 0) { notice('当前没有可导出的图'); return; }
@@ -1715,6 +1770,7 @@ $('#btnStaleDismiss').onclick = () => {
 async function checkStale() {
   try {
     const s = await api('/status');
+    if (s.root) projectRoot = s.root; // 顺手缓存项目根，供「在编辑器打开」拼绝对路径
     if (s.stale && !s.reindexing) {
       const text = s.staleFile
         ? `⚠ 检测到代码变更（${s.staleFile}），索引可能已过期`
@@ -1729,6 +1785,7 @@ async function checkStale() {
   } catch { /* 状态查询失败静默 */ }
 }
 setInterval(checkStale, 20000);
+checkStale(); // 启动即拉一次：尽早拿到 root 与过期状态，不等 3s
 setTimeout(checkStale, 3000);
 // 节点高亮搜索：匹配的节点保持清晰，其余降低透明度（关键词存起来，relayout 重建 DOM 后重放）
 let highlightKW = '';
@@ -1757,22 +1814,22 @@ function reachableSet(key) {
 function applyChainHighlight(key) {
   if (!key) { clearChainHighlight(); return; }
   const set = reachableSet(key);
-  document.querySelectorAll('#viewport .node').forEach(el => {
+  /** @type {SVGElement[]} */ ([...document.querySelectorAll('#viewport .node')]).forEach(el => {
     el.style.opacity = set.has(el.dataset.key) ? '1' : '0.15';
   });
-  document.querySelectorAll('#viewport .edge').forEach(el => {
+  /** @type {SVGElement[]} */ ([...document.querySelectorAll('#viewport .edge')]).forEach(el => {
     el.style.opacity = (set.has(el.dataset.a) && set.has(el.dataset.b)) ? '1' : '0.15';
   });
 }
 // 清除高亮：边恢复默认，节点按关键字高亮规则重放
 function clearChainHighlight() {
-  document.querySelectorAll('#viewport .edge').forEach(el => { el.style.opacity = ''; });
+  /** @type {SVGElement[]} */ ([...document.querySelectorAll('#viewport .edge')]).forEach(el => { el.style.opacity = ''; });
   applyHighlight();
 }
 function applyHighlight() {
   if (hoverKey || clickKey) return; // 全链路高亮期间暂停关键字高亮，清除后自动恢复
   const kw = highlightKW.trim().toLowerCase();
-  document.querySelectorAll('#viewport .node').forEach(el => {
+  /** @type {SVGElement[]} */ ([...document.querySelectorAll('#viewport .node')]).forEach(el => {
     // 用原始 label 匹配（data-key 取回），不受显示截断影响
     const node = graph.nodes.get(el.dataset.key);
     const label = ((node && node.label) || el.querySelector('text')?.textContent || '').toLowerCase();
@@ -1891,10 +1948,10 @@ function setLeftCollapsed(c) {
 $('#btnLeftToggle').onclick = () => setLeftCollapsed(!document.body.classList.contains('left-collapsed'));
 $('#leftStrip').onclick = () => setLeftCollapsed(false);
 // 左侧面板头部折叠按钮（与右侧源码面板对称）
-document.querySelectorAll('.panel-fold').forEach(b => b.onclick = () => setLeftCollapsed(true));
+/** @type {HTMLElement[]} */ ([...document.querySelectorAll('.panel-fold')]).forEach(b => b.onclick = () => setLeftCollapsed(true));
 // 快捷键：u 撤销展开 / r 重置 / / 聚焦搜索（输入框内不拦截）
 document.addEventListener('keydown', e => {
-  const tag = ((e.target && e.target.tagName) || '').toLowerCase();
+  const tag = ((/** @type {Element} */ (e.target) || {}).tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
   if (e.key === 'u' || e.key === 'U') undoExpand();
   else if (e.key === 'r' || e.key === 'R') $('#btnReset').click();
@@ -1907,7 +1964,7 @@ document.addEventListener('keydown', e => {
     // 结果面板打开时：Esc 先关面板
     if ($('#results').style.display === 'flex') { showPanel('none'); return; }
     // 关闭 notice（含 loading 态），并清空节点高亮；输入框内的 ESC 由各自元素处理
-    clearTimeout(notice._t);
+    clearTimeout(noticeTimer);
     const noticeEl = $('#notice');
     noticeEl.classList.remove('info');
     noticeEl.style.display = 'none';
@@ -1932,6 +1989,7 @@ $('#btnReset').onclick = () => {
   $('#minimap').style.display = 'none';
   $('#fileFilter').value = '';
   saveHash();
+  fileListLimit = FILE_PAGE;
   renderFiles();
   showPanel('files');
 };
