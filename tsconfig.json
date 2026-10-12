@@ -13,6 +13,13 @@
     "checkJs": true,
     "noEmit": true,
 
+    // lib/**/*.ts 由 Node 原生剥离类型后直接运行（≥22.18，无构建步骤）。
+    // 因此：.mjs 里要能写 `import './textparse.ts'`，且 TS 语法必须是可擦除的
+    // （不能用 enum / namespace / 构造函数参数属性 —— erasableSyntaxOnly 会拦住）。
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+
     // 渐进式：先抓「真错」（参数个数、属性名拼写、未定义变量），不追求严格空检查。
     // 后续可逐文件开 strict，或改用 // @ts-check 分区。
     "strict": false,
@@ -26,6 +33,7 @@
     "server.mjs",
     "bin/**/*.mjs",
     "lib/**/*.mjs",
+    "lib/**/*.ts",
     "scripts/**/*.mjs",
     "test/**/*.mjs",
     "public/app.js"

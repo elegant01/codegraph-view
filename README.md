@@ -22,6 +22,7 @@ cgv query xxx     # 其余命令全部等同 codegraph（init / callers / callee
 cgv               # 查看帮助
 ```
 
+- 需要 **Node ≥ 22.18**：`cgv view` 会加载 `lib/textparse.ts`，靠 Node 原生类型剥离直接执行（项目不做构建，原因见「为什么 `lib/` 里有 `.ts` 文件」）
 - 默认只监听 **127.0.0.1**（本机工具，防局域网访问你的源码）；需要分享时显式 `--host`
 - codegraph 本体作为依赖自动安装，**不需要单独装 codegraph**
 - 分享给别人：把 `codegraph-view-1.0.0.tgz` 发给对方，`npm i -g codegraph-view-1.0.0.tgz` 即可
@@ -237,7 +238,7 @@ cd /path/to/go-service && cgv view 4000   # Go
 
 - `bin/cgv.mjs`：命令分发器 —— `view` 启动可视化服务，其余参数原样转发给包内依赖的 codegraph
 - `server.mjs`：node:http 静态服务 + API 层（缓存、gzip、SSE、并发限流、reindex 互斥、索引过期 watch）
-- `lib/`：可测试的纯逻辑模块 —— `validate`（输入校验/shell 安全）· `proc`（子进程执行器）· `textparse`（CLI 输出契约层）· `routes`（Laravel 路由解析）· `urlmap`（自定义框架 URL 定位）· `sourcecalls`（源码级动态调用补全）· `trace`（全链路 BFS，双向可取消）
+- `lib/`：可测试的纯逻辑模块 —— `validate`（输入校验/shell 安全）· `proc`（子进程执行器）· `textparse.ts`（CLI 输出契约层，见下）· `routes`（Laravel 路由解析）· `urlmap`（自定义框架 URL 定位）· `sourcecalls`（源码级动态调用补全）· `trace`（全链路 BFS，双向可取消）
 - `public/index.html`：单页前端，纯 SVG 画图，无任何框架/依赖
 
 API：
@@ -262,7 +263,21 @@ npm run typecheck # TypeScript 类型检查（checkJs，零构建，仅检查不
 npm run e2e       # 端到端冒烟（对存在的 fixture 项目起服务验证 API）
 ```
 
-> 类型检查说明：项目**不需要构建**，运行时仍是原生 `.mjs` / `.js`。
-> `tsconfig.json` 只开 `allowJs + checkJs + noEmit`，用于拦住「调用方参数与函数签名对不上」
-> 这类运行期才暴露的静默 bug（例如 trace 漏传 root）。DOM 相关的类型断言集中在少数几处。
-> 迁到真 `.ts` 的路线见 `TODO.md` 第十节。
+> 类型检查说明：项目**不需要构建**。`server.mjs` 与 `lib/*.mjs` 由 `checkJs` 直接检查，
+> 工具链只做静态分析、不产出任何文件。DOM 相关的类型断言集中在少数几处。
+> 迁移进度与路线见 `TODO.md` 第十节。
+
+### 为什么 `lib/` 里有 `.ts` 文件？
+
+`lib/textparse.ts` 是「codegraph CLI 输出 → 内部结构」的**唯一契约点**：`SymbolNode` /
+`TrailEntry` / `QueryPayload` 这些 interface 定义在这里，下游 `.mjs` 就能被 `checkJs` 校验到
+字段名与形状。它**不经过任何构建**——Node（≥22.18）原生剥离类型后直接执行，`.mjs` 里照常
+`import './textparse.ts'`。为此：
+
+- 语法必须**可擦除**（不能用 `enum` / `namespace` / 构造函数参数属性），由 tsconfig 的
+  `erasableSyntaxOnly` 强制；
+- 因此 **`cgv view` 要求 Node ≥ 22.18**（`cgv <其他命令>` 只转发给 codegraph，不受影响）。
+  `bin/cgv.mjs` 会在版本不足时给出明确提示，而不是抛 `ERR_UNKNOWN_FILE_EXTENSION`。
+
+选这条路而不是 `tsc` 编译到 `dist/`，是为了保住项目从第一天起就有的「改完直接
+`node server.mjs` 就能跑」——真 `.ts` 与零构建并不冲突。

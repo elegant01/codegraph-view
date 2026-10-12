@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { safeArg, safeFile, clampInt, assertShellSafe } from '../lib/validate.mjs';
-import { parseJson, parseTrail, parseNodeKind, extractSource, isImportRef, fuzzyMatch, looksLikeNodeOutput } from '../lib/textparse.mjs';
+import { parseJson, parseTrail, parseNodeKind, extractSource, isImportRef, fuzzyMatch, looksLikeNodeOutput } from '../lib/textparse.ts';
 import { parseRouteFile, matchRoute, parseGoRouteFile, parseBeegoAnnotations } from '../lib/routes.mjs';
 import { matchUrlPattern, parseSegTokens, matchSeg } from '../lib/urlmap.mjs';
 import { parseSourceCalls, lastSeg } from '../lib/sourcecalls.mjs';

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { join, extname, normalize, relative, isAbsolute } from 'node:path';
 import { safeArg, safeFile, clampInt } from './lib/validate.mjs';
 import { createRunner } from './lib/proc.mjs';
-import { parseJson, parseTrail, parseNodeKind, isImportRef, fuzzyMatch } from './lib/textparse.mjs';
+import { parseJson, parseTrail, parseNodeKind, isImportRef, fuzzyMatch } from './lib/textparse.ts';
 import { createRouteParser, matchRoute } from './lib/routes.mjs';
 import { createUrlMapper } from './lib/urlmap.mjs';
 import { createSymbolResolver } from './lib/sourcecalls.mjs';
@@ -100,6 +100,57 @@ function kindLookupFrom(...raws) {
   return map;
 }
 
+// 等 promise 最多 ms 毫秒；超时返回 null，但底层查询继续跑完并自己写缓存（不取消）。
+// 用于「可选增强」：拿得到就带上，拿不到也不能拖慢或污染主结果。
+function withDeadline(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      const t = setTimeout(() => resolve(null), ms);
+      if (t && typeof t.unref === 'function') t.unref(); // 别让这个计时器吊住进程
+    }),
+  ]);
+}
+
+// 查一次邻居 kind（两次 --json 并发，自带并发合流）。
+// 只有「真的查到了」（至少一侧返回了合法 JSON）才写缓存；查失败/超时记一次冷却，
+// 冷却期内不再重试——否则每次 graph 请求都要白等一个 KIND_WAIT_MS。
+function primeKinds(sym) {
+  const running = kindInflight.get(sym);
+  if (running) return running;
+  const p = (async () => {
+    try {
+      const raws = await Promise.all([
+        run(['callers', sym, '--json', '-l', '40']).catch(() => ''),
+        run(['callees', sym, '--json', '-l', '40']).catch(() => ''),
+      ]);
+      const map = kindLookupFrom(...raws);
+      if (raws.some(r => parseJson(r, null) !== null)) {
+        cacheSet(kindCache, sym, map, 300);
+        kindFailedAt.delete(sym);
+      } else {
+        kindFailedAt.set(sym, Date.now());
+      }
+      return map;
+    } finally {
+      kindInflight.delete(sym);
+    }
+  })();
+  kindInflight.set(sym, p);
+  return p;
+}
+
+// 取 kind：命中缓存立即返回；否则起一次查询并最多等 KIND_WAIT_MS，超时先返回 null
+// （本次不带 kind，查询在后台跑完写缓存，下次请求即命中）。
+const KIND_WAIT_MS = 1500;
+const KIND_RETRY_MS = 30000; // 查询失败后的冷却，避免每次请求都白等
+async function kindsFor(sym) {
+  const hit = cacheGet(kindCache, sym, TTL_KINDS * staleFactor());
+  if (hit) return hit;
+  if (Date.now() - (kindFailedAt.get(sym) || 0) < KIND_RETRY_MS) return null;
+  return withDeadline(primeKinds(sym), KIND_WAIT_MS);
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -123,11 +174,17 @@ function json(req, res, code, obj) {
 
 // ===== 短 TTL 缓存（搜索结果 / 文件列表），reindex 时失效 =====
 // 索引过期（stale）时 TTL 减半：改码后旧结果更快让位，同时避免完全禁缓存打爆 CLI
-const TTL_SEARCH = 20000, TTL_FILES = 30000, TTL_GRAPH = 30000, TTL_TRACE = 60000;
+const TTL_SEARCH = 20000, TTL_FILES = 30000, TTL_GRAPH = 30000, TTL_TRACE = 60000, TTL_KINDS = 60000;
 const staleFactor = () => (indexStale ? 0.5 : 1);
 const searchCache = new Map(); // key -> { at, data }
 const graphCache = new Map();  // symbol|file -> { at, data }（点节点/展开都走它）
 const traceCache = new Map();  // symbol|file|depth|maxNodes|direction -> { at, data }
+// 邻居 kind 单独缓存：它来自一次可失败/可超时的 --json 查询，不能和 graph 主结果
+// （node -f 的 Trail，稳定且快）混在同一个缓存里，否则冷启动那次拿不到 kind 的结果
+// 会把「无 kind」冻结一整个 TTL。key 是 symbol，value 是 Map<'file::name', kind>。
+const kindCache = new Map();     // symbol -> { at, map }
+const kindInflight = new Map();  // symbol -> Promise<Map>（并发合流）
+const kindFailedAt = new Map();  // symbol -> 上次查询失败时间（冷却期内不再重试）
 const filesCache = { at: 0, data: null };
 function cacheGet(map, key, ttl) {
   const e = map.get(key);
@@ -172,6 +229,8 @@ function invalidateAll() {
   searchCache.clear();
   graphCache.clear();
   traceCache.clear();
+  kindCache.clear();
+  kindFailedAt.clear();
   filesCache.at = 0; filesCache.data = null;
   symbolsCache.clear();
   routeParser.invalidate();
@@ -329,41 +388,46 @@ const server = createServer(async (req, res) => {
       if (!sym) return json(req, res, 400, { error: 'missing ?symbol=' });
       const file = safeFile((url.searchParams.get('file') || '').trim());
       // 缓存：点同一个节点、展开→撤销→再展开都会重复请求同一个 (symbol,file)，
-      // 每次都要跑 1–3 次 CLI，命中后基本免费（TTL 30s，stale 减半，reindex 失效）
+      // 每次都要跑 1–3 次 CLI，命中后基本免费（TTL 30s，stale 减半，reindex 失效）。
+      // 缓存里只放「由 node -f 的 Trail 得到的主结果」——邻居 kind 不进去，见下方合并逻辑。
       const gkey = sym + '|' + file;
-      const ghit = cacheGet(graphCache, gkey, TTL_GRAPH * staleFactor());
-      if (ghit) return json(req, res, 200, ghit);
-      let data;
-      if (file) {
-        // Trail 文本只有 name/file/line，没有 kind。并行拉一份 --json（带 kind）按
-        // (filePath,name) 回填；这两次是可选增强，给短超时且失败即放弃，绝不拖慢主结果。
-        const [nodeRaw, callersRaw, calleesRaw] = await Promise.all([
-          run(['node', sym, '-f', file]),
-          run(['callers', sym, '--json', '-l', '40'], { timeout: 15000 }).catch(() => ''),
-          run(['callees', sym, '--json', '-l', '40'], { timeout: 15000 }).catch(() => ''),
-        ]);
-        const kinds = kindLookupFrom(callersRaw, calleesRaw);
-        const dropImport = (c) => c && !isImportRef(c.name);
-        const withKind = (c) => ({ ...c, kind: kinds.get(normPath(c.filePath) + '::' + c.name) || null });
-        data = {
-          symbol: sym,
-          kind: parseNodeKind(nodeRaw),
-          line: parseNodeLine(nodeRaw),
-          callers: parseTrail(nodeRaw, 'Called by ←').filter(dropImport).map(withKind),
-          callees: parseTrail(nodeRaw, 'Calls →').filter(dropImport).map(withKind),
-          source: nodeRaw,
-        };
-      } else {
-        const [callersRaw, calleesRaw, nodeRaw] = await Promise.all([
-          run(['callers', sym, '--json', '-l', '40']),
-          run(['callees', sym, '--json', '-l', '40']),
-          run(['node', sym]),
-        ]);
-        const callers = parseJson(callersRaw, {}).callers || [];
-        const callees = parseJson(calleesRaw, {}).callees || [];
-        data = { symbol: sym, kind: parseNodeKind(nodeRaw), line: parseNodeLine(nodeRaw), callers, callees, source: nodeRaw };
+      let data = cacheGet(graphCache, gkey, TTL_GRAPH * staleFactor());
+      if (!data) {
+        if (file) {
+          const nodeRaw = await run(['node', sym, '-f', file]);
+          const dropImport = (c) => c && !isImportRef(c.name);
+          data = {
+            symbol: sym,
+            kind: parseNodeKind(nodeRaw),
+            line: parseNodeLine(nodeRaw),
+            callers: parseTrail(nodeRaw, 'Called by ←').filter(dropImport),
+            callees: parseTrail(nodeRaw, 'Calls →').filter(dropImport),
+            source: nodeRaw,
+          };
+        } else {
+          const [callersRaw, calleesRaw, nodeRaw] = await Promise.all([
+            run(['callers', sym, '--json', '-l', '40']),
+            run(['callees', sym, '--json', '-l', '40']),
+            run(['node', sym]),
+          ]);
+          const callers = parseJson(callersRaw, {}).callers || [];
+          const callees = parseJson(calleesRaw, {}).callees || [];
+          data = { symbol: sym, kind: parseNodeKind(nodeRaw), line: parseNodeLine(nodeRaw), callers, callees, source: nodeRaw };
+        }
+        cacheSet(graphCache, gkey, data, 300);
       }
-      cacheSet(graphCache, gkey, data, 300);
+      // 邻居 kind 合并：只有 file 分支需要（Trail 文本不含 kind；非 file 分支的 --json 本就带）。
+      // kind 来自另一次可失败/可超时的查询、且单独缓存，所以这里每次都尝试合并——不烤进上面那份
+      // 缓存，否则冷启动那一次拿不到 kind 的结果会把「无 kind」冻结一整个 TTL。
+      // 另外：--json 返回的是所有同名符号的合并结果，文件精确的邻居未必在其中，
+      // 所以「部分邻居有 kind、部分为 null」是正常降级，不是 bug。
+      if (file) {
+        const kinds = await kindsFor(sym);
+        if (kinds && kinds.size) {
+          const withKind = (c) => ({ ...c, kind: kinds.get(normPath(c.filePath) + '::' + c.name) || c.kind });
+          return json(req, res, 200, { ...data, callers: data.callers.map(withKind), callees: data.callees.map(withKind) });
+        }
+      }
       return json(req, res, 200, data);
     }
     // 查找接口/抽象方法的实现：查询同名候选，返回 class/method/function 实现项
