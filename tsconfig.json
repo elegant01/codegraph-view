@@ -1,6 +1,6 @@
 {
   // 类型检查专用配置：不产出任何文件，不引入构建步骤（后端 .ts 由 Node 原生剥离类型运行）。
-  // 目的（见 TODO.md 的 TS 迁移说明）：用类型系统拦住「调用方参数和签名对不上」这类
+  // 目的：用类型系统拦住「调用方参数和签名对不上」这类
   // 静默 bug —— 例如 resolveSourceCalls 漏传 root、trace 邻居节点 kind 恒为 null。
   "compilerOptions": {
     "target": "ES2022",
