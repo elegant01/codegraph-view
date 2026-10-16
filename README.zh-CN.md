@@ -25,17 +25,11 @@
 
 ## 安装与使用
 
-**方式一：全局 npm 包（推荐，可分享）**
+**方式一：从 npm 安装（推荐）**
 
 ```bash
-npm pack                          # 在仓库根目录执行，生成 codegraph-view-<版本号>.tgz
-npm i -g ./codegraph-view-<版本号>.tgz
+npm i -g codegraph-view
 ```
-
-`npm pack` / `npm publish` 会触发 `prepare` 钩子，把 `bin/`、`lib/`、`server.ts` 编译进 `dist/`
-（并把 `public/` 拷到 `dist/public/`）——**发出去的是编译后的 JS，不是 `.ts`**。这不是偏好问题：
-Node 不对 `node_modules` 下的文件做类型剥离（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，
-既定行为、没有 flag 能放开），所以 `bin` 指向 `.ts` 的包一装上就崩。开发流程仍然零构建，见下面「为什么后端是 `.ts`」。
 
 之后在任何**已用 codegraph 建好索引**的项目根目录：
 
@@ -47,13 +41,25 @@ cgv query xxx     # 其余命令全部等同 codegraph（init / callers / callee
 cgv               # 查看帮助
 ```
 
-- 需要 **Node ≥ 22.18**：`cgv view` 会加载 `lib/textparse.ts`，靠 Node 原生类型剥离直接执行（项目不做构建，原因见「为什么 `lib/` 里有 `.ts` 文件」）
+- 需要 **Node ≥ 22.18**（`engines` 里声明的）。从源码跑时靠 Node 原生类型剥离执行 `lib/*.ts`；
+  从 npm 装的那份是编译好的 JS，运行时不剥任何类型
 - 默认只监听 **127.0.0.1**（本机工具，防局域网访问你的源码）；需要分享时显式 `--host`
 - codegraph 本体作为依赖自动安装，**不需要单独装 codegraph**
-- 分享给别人：把打好的 `.tgz` 发给对方，`npm i -g codegraph-view-<版本号>.tgz` 即可
 - 命令有两个名字：`cgv` 和 `codegraph-view`，效果一样
 
-**方式二：仓库内直接跑（开发用）**
+**方式二：从本地仓库打包安装（改还没发版时用）**
+
+```bash
+npm pack                          # 在仓库根目录执行，生成 codegraph-view-<版本号>.tgz
+npm i -g ./codegraph-view-<版本号>.tgz
+```
+
+`npm pack` / `npm publish` 会触发 `prepare` 钩子，把 `bin/`、`lib/`、`server.ts` 编译进 `dist/`
+（并把 `public/` 拷到 `dist/public/`）——**发出去的是编译后的 JS，不是 `.ts`**。这不是偏好问题：
+Node 不对 `node_modules` 下的文件做类型剥离（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，
+既定行为、没有 flag 能放开），所以 `bin` 指向 `.ts` 的包一装上就崩。开发流程仍然零构建，见下面「为什么后端是 `.ts`」。
+
+**方式三：仓库内直接跑（开发用）**
 
 ```bash
 node server.ts [端口]   # 默认 39267，退回用 PATH 里的 codegraph（需 Node ≥22.18）

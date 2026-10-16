@@ -27,7 +27,29 @@ Pick a method and see what calls it and what it calls: green on the left are **c
 
 ## Install and usage
 
-**Option 1: global npm package (recommended, shareable)**
+**Install from npm (recommended)**
+
+```bash
+npm i -g codegraph-view
+```
+
+Then, from the root of any project **already indexed by codegraph**:
+
+```bash
+cgv view          # start the visualizer on port 39267; open http://localhost:39267
+cgv view 3456     # pick a port
+cgv view 3456 --host 0.0.0.0   # allow LAN access (default is 127.0.0.1 only — mind the security note)
+cgv query xxx     # every other command is passed straight to codegraph (init / callers / callees / node ...)
+cgv               # help
+```
+
+- Requires **Node ≥ 22.18** (as declared in `engines`). Running from source relies on Node's native type
+  stripping for `lib/*.ts`; the published package ships compiled JS, so nothing strips types at runtime
+- Listens on **127.0.0.1** only by default (it is a local tool; this keeps your source off the LAN). Pass `--host` explicitly to share it
+- codegraph itself is installed as a dependency — **you do not need to install codegraph separately**
+- The command answers to two names: `cgv` and `codegraph-view`
+
+**Install from a checkout instead (for unreleased changes)**
 
 ```bash
 npm pack                          # run from the repo root; produces codegraph-view-<version>.tgz
@@ -40,23 +62,7 @@ That is not a preference: Node refuses to strip types for any file under `node_m
 (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, by design, no flag lifts it), so a package whose `bin`
 is a `.ts` file crashes on install. Development is still build-free — see "Why is the backend `.ts`?".
 
-Then, from the root of any project **already indexed by codegraph**:
-
-```bash
-cgv view          # start the visualizer on port 39267; open http://localhost:39267
-cgv view 3456     # pick a port
-cgv view 3456 --host 0.0.0.0   # allow LAN access (default is 127.0.0.1 only — mind the security note)
-cgv query xxx     # every other command is passed straight to codegraph (init / callers / callees / node ...)
-cgv               # help
-```
-
-- Requires **Node ≥ 22.18**: `cgv view` loads `lib/textparse.ts` and relies on Node's native type stripping to execute it (the project has no build step — see "Why is the backend `.ts`?")
-- Listens on **127.0.0.1** only by default (it is a local tool; this keeps your source off the LAN). Pass `--host` explicitly to share it
-- codegraph itself is installed as a dependency — **you do not need to install codegraph separately**
-- To share with someone: send them the `.tgz` and have them run `npm i -g codegraph-view-<version>.tgz`
-- The command answers to two names: `cgv` and `codegraph-view`
-
-**Option 2: run straight from the repo (development)**
+**Run straight from the repo (development)**
 
 ```bash
 node server.ts [port]   # defaults to 39267, falls back to codegraph on PATH (needs Node ≥22.18)
