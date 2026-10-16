@@ -102,8 +102,8 @@ node server.ts [端口]   # 默认 39267，退回用 PATH 里的 codegraph（需
 - **自动探测，无需配置**：工具会扫描项目目录，自动识别 `control/` + `ctlXxx.php` + `funcXxx` 方法约定。输入真实后台 URL（如 `/php-admin/orderList.html`、`/php-admin/module/page.html`、`/php-admin/module/List-index.html`）自动定位到对应方法并画图/展开链路
 - 自动探测覆盖的约定：
   - 控制器目录：`control/`（含子目录做模块分组）
-  - 文件命名：`ctl<Controller>.php` 或模块前缀 `ctl<Module><Controller>.php`（如 `tv/room.html` → `control/module/ctlModulePage.php`）
-  - 方法命名：`func<Method>`（`Video-index` → `funcIndex`），URL 无方法段默认 `funcIndex`，方法不存在时回退文件第一个 `func` 方法
+  - 文件命名：`ctl<Controller>.php` 或模块前缀 `ctl<Module><Controller>.php`（如 `module/page.html` → `control/module/ctlModulePage.php`）
+  - 方法命名：`func<Method>`（`List-index` → `funcIndex`），URL 无方法段默认 `funcIndex`，方法不存在时回退文件第一个 `func` 方法
 - **配置文件可选**：只有当个别 URL 命名不规则、自动探测匹配不到时，才需要 `codegraph.route.json`，且只需写 `overrides` 特例（几乎零维护）：
 
 ```json
@@ -173,7 +173,7 @@ cgv view 4001    # 搜索/调用图/链路对 modules、packages、services 里�
 - 平级且互不嵌套的独立项目（如 php-admin、nextjs-app、go-service）才需要分别在各自根目录启动：
 
 ```bash
-cd /path/to/php-admin     && cgv view 4002   # PHP 自定义框架
+cd /path/to/php-admin  && cgv view 4002   # PHP 自定义框架
 cd /path/to/nextjs-app && cgv view 3999   # Next.js
 cd /path/to/go-service && cgv view 4000   # Go
 ```
@@ -271,7 +271,7 @@ npm run e2e       # 端到端冒烟（对存在的 fixture 项目起服务验证
 > `parseJson<T>(raw, fallback)` + 契约类型（`SymbolNode` / `NeighborsPayload` …）在调用处声明形状；
 > catch 变量统一走 `errMsg(e)`（后端 `lib/err.ts`，前端本地一份）。可空性逐处梳理过：
 > 能加守卫的加守卫，必要的断言集中在少数几处并写明理由。
-> 迁移进度与路线见 `TODO.md` 第十节。
+> 迁移进度与路线记录在本地内部文档中（不随本仓库分发）。
 
 ### 为什么后端是 `.ts`？
 

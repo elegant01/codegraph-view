@@ -1,9 +1,12 @@
 // 端到端冒烟：对存在的 fixture 项目逐个起服务，验证核心 API 可用且结构正确
-// 用法: node scripts/e2e.ts [项目根目录...]（不传则用默认 fixture 列表，目录不存在自动跳过）
+// 用法: node scripts/e2e.ts [项目根目录...]
+//   传参 → 用参数当项目根目录；不传 → 读 scripts/fixtures.local.json（无则读 .example.json）；
+//   目录不存在自动跳过。
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { loadFixtures, type Fixture } from './fixtures.ts';
 
 // ===== 断言用到的载荷形状（只声明真正读到的字段，避免用 any 兜底）=====
 interface StatusPayload { stale?: boolean }
@@ -11,22 +14,15 @@ interface FileItem { path: string; nodeCount: number }
 interface SymbolsPayload { symbols?: Array<{ name: string; kind?: string; line?: number }> }
 interface GraphPayload { callers?: unknown[]; callees?: unknown[] }
 interface TracePayload { nodes?: unknown[]; edges?: unknown[]; direction?: 'up' | 'down' }
-interface Fixture { name: string; root: string; port: number }
 interface ApiResponse { status: number; data: unknown }
 interface SSEEvent { event: string; data: unknown }
 interface TraceStreamResult { status: number; events: SSEEvent[]; data: unknown; error: unknown }
 
 const PKG = fileURLToPath(new URL('..', import.meta.url));
-const DEFAULT_FIXTURES: Fixture[] = [
-  { name: 'nextjs-app', root: 'F:\\projects\\nextjs-app', port: 5199 },
-  { name: 'go-service', root: 'F:\\projects\\go-service', port: 5200 },
-  { name: 'monorepo', root: 'F:\\projects\\monorepo', port: 5201 },
-  { name: 'php-admin', root: 'F:\\projects\\php-admin', port: 5202 },
-];
 
 const fixtures: Fixture[] = process.argv.slice(2).length
   ? process.argv.slice(2).map((root, i) => ({ name: root, root, port: 5300 + i }))
-  : DEFAULT_FIXTURES;
+  : loadFixtures();
 
 let passed = 0, failed = 0;
 function check(name: string, cond: unknown, extra = ''): void {

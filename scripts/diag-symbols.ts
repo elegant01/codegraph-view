@@ -1,21 +1,17 @@
 // 诊断：对每个 fixture 项目起服务，按「符号数最多的 / 中段 / 最少」分层抽样文件，
 // 查 /api/symbols 统计空结果比例（用于排查 codegraph 符号表解析的覆盖情况）。
+// 项目列表读 scripts/fixtures.local.json（无则读 .example.json），端口按序 +12 避开 e2e 的占用。
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { loadFixtures, type Fixture } from './fixtures.ts';
 
-interface Project { name: string; root: string; port: number }
 interface FileItem { path: string; nodeCount: number }
 interface ApiResponse { status: number; data: unknown }
 
 const PKG = fileURLToPath(new URL('..', import.meta.url));
-const PROJECTS: Project[] = [
-  { name: 'monorepo', root: 'F:\\projects\\monorepo', port: 5211 },
-  { name: 'go-service', root: 'F:\\projects\\go-service', port: 5212 },
-  { name: 'php-admin', root: 'F:\\projects\\php-admin', port: 5213 },
-  { name: 'chat-app', root: 'F:\\projects\\chat-app', port: 5214 },
-];
+const PROJECTS: Fixture[] = loadFixtures().map(f => ({ ...f, port: f.port + 12 }));
 
 async function get(port: number, path: string, timeoutMs = 90000): Promise<ApiResponse> {
   const ctl = new AbortController();

@@ -1,0 +1,6 @@
+[
+  { "name": "nextjs-app", "root": "/path/to/nextjs-app", "port": 5199 },
+  { "name": "go-service", "root": "/path/to/go-service", "port": 5200 },
+  { "name": "monorepo", "root": "/path/to/monorepo", "port": 5201 },
+  { "name": "php-admin", "root": "/path/to/php-admin", "port": 5202 }
+]

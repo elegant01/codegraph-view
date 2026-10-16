@@ -8,3 +8,8 @@ server-preview*.log
 .atomcode/
 .claude/
 .mcp.json
+
+# 内部文档与本地 fixture 配置（不随仓库分发）
+TEST_CASES.md
+TODO.md
+scripts/fixtures.local.json
