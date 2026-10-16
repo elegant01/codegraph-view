@@ -1,5 +1,7 @@
 # CodeGraph 可视化（codegraph-view）
 
+**中文** · [English](https://github.com/elegant01/codegraph-view/blob/main/README.en.md)
+
 把 CodeGraph 索引的**代码符号调用关系**画成可交互的图，并集成了 codegraph 的全部命令。
 
 ## 界面预览
