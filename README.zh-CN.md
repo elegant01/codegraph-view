@@ -28,9 +28,8 @@
 **方式一：全局 npm 包（推荐，可分享）**
 
 ```bash
-cd scripts/codegraph-viz
-npm pack                          # 生成 codegraph-view-1.0.0.tgz
-npm i -g ./codegraph-view-1.0.0.tgz
+npm pack                          # 在仓库根目录执行，生成 codegraph-view-<版本号>.tgz
+npm i -g ./codegraph-view-<版本号>.tgz
 ```
 
 之后在任何**已用 codegraph 建好索引**的项目根目录：
@@ -46,7 +45,7 @@ cgv               # 查看帮助
 - 需要 **Node ≥ 22.18**：`cgv view` 会加载 `lib/textparse.ts`，靠 Node 原生类型剥离直接执行（项目不做构建，原因见「为什么 `lib/` 里有 `.ts` 文件」）
 - 默认只监听 **127.0.0.1**（本机工具，防局域网访问你的源码）；需要分享时显式 `--host`
 - codegraph 本体作为依赖自动安装，**不需要单独装 codegraph**
-- 分享给别人：把 `codegraph-view-1.0.0.tgz` 发给对方，`npm i -g codegraph-view-1.0.0.tgz` 即可
+- 分享给别人：把打好的 `.tgz` 发给对方，`npm i -g codegraph-view-<版本号>.tgz` 即可
 - 命令有两个名字：`cgv` 和 `codegraph-view`，效果一样
 
 **方式二：仓库内直接跑（开发用）**

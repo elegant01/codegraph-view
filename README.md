@@ -30,9 +30,8 @@ Pick a method and see what calls it and what it calls: green on the left are **c
 **Option 1: global npm package (recommended, shareable)**
 
 ```bash
-cd scripts/codegraph-viz
-npm pack                          # produces codegraph-view-1.0.0.tgz
-npm i -g ./codegraph-view-1.0.0.tgz
+npm pack                          # run from the repo root; produces codegraph-view-<version>.tgz
+npm i -g ./codegraph-view-<version>.tgz
 ```
 
 Then, from the root of any project **already indexed by codegraph**:
@@ -48,7 +47,7 @@ cgv               # help
 - Requires **Node ≥ 22.18**: `cgv view` loads `lib/textparse.ts` and relies on Node's native type stripping to execute it (the project has no build step — see "Why is the backend `.ts`?")
 - Listens on **127.0.0.1** only by default (it is a local tool; this keeps your source off the LAN). Pass `--host` explicitly to share it
 - codegraph itself is installed as a dependency — **you do not need to install codegraph separately**
-- To share with someone: send them `codegraph-view-1.0.0.tgz` and have them run `npm i -g codegraph-view-1.0.0.tgz`
+- To share with someone: send them the `.tgz` and have them run `npm i -g codegraph-view-<version>.tgz`
 - The command answers to two names: `cgv` and `codegraph-view`
 
 **Option 2: run straight from the repo (development)**
