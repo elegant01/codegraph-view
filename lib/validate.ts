@@ -36,6 +36,10 @@ export function assertShellSafe(args: readonly unknown[]): void {
 
 // 把任意输入钳到 [min, max] 内的整数；非法/缺失时取默认值
 export function clampInt(v: unknown, def: number, min: number, max: number): number {
+  // 必须先挡 null / undefined / ''：Number(null) 与 Number('') 都是 0（不是 NaN），
+  // 会被下面的 isFinite 放行、再被 min 夹住 —— 于是「没传参数」等价于「传了最小值」，
+  // def 形同虚设。URL 参数缺省时 get() 正是返回 null（曾导致 depth 默认 6 实际为 1）。
+  if (v === null || v === undefined || v === '') return def;
   const n = Number(v);
   if (!Number.isFinite(n)) return def;
   return Math.max(min, Math.min(max, Math.floor(n)));

@@ -47,6 +47,12 @@ test('clampInt 上下限与非法输入', () => {
   assert.equal(clampInt('-5', 6, 1, 10), 1);
   assert.equal(clampInt('abc', 6, 1, 10), 6);
   assert.equal(clampInt(undefined, 300, 10, 800), 300);
+  // 参数缺省：URLSearchParams.get() 返回 null、空表单值返回 ''，都必须走 def
+  // （回归：曾因 Number(null) === 0 被 min 夹住，导致 depth 默认 6 变成 1）
+  assert.equal(clampInt(null, 6, 1, 10), 6);
+  assert.equal(clampInt('', 6, 1, 10), 6);
+  assert.equal(clampInt(null, 300, 10, 800), 300);
+  assert.equal(clampInt('', 39267, 1, 65535), 39267);
 });
 
 // ===== textparse（codegraph CLI 输出契约） =====
