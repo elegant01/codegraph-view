@@ -39,7 +39,7 @@ interface MethodRule {
   capitalize?: boolean;
 }
 
-/** codegraph.route.json 的结构（字段含义见 README「自定义框架」） */
+/** codegraph.route.json 的结构（字段含义见 README「Custom frameworks」） */
 export interface UrlMapConfig {
   basePath?: string;
   patterns?: string[];

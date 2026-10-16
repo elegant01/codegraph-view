@@ -1,0 +1,333 @@
+# CodeGraph 可视化（codegraph-view）
+
+[English](https://github.com/elegant01/codegraph-view/blob/main/README.md) · **中文**
+
+把 CodeGraph 索引的**代码符号调用关系**画成可交互的图，并集成了 codegraph 的全部命令。
+
+## 界面预览
+
+以某个方法为中心画它的调用关系：左边绿色是**调用者**、右边蓝色是**被调用者**，中间金色是当前符号。
+（以下截图取自仓库内的示例项目 `examples/demo-app`，可自行跑起来复现。）
+
+![调用关系图](https://raw.githubusercontent.com/elegant01/codegraph-view/main/docs/preview-graph.png)
+
+**接口 URL 定位**：直接输入接口地址（如 `/api/media/audit`），落到对应的 `route.ts`；点「⧉ 链路」展开它调用的整棵调用树。
+
+![接口 URL 定位](https://raw.githubusercontent.com/elegant01/codegraph-view/main/docs/preview-route.png)
+
+**全链路展开**：一次画出多层调用链（状态栏显示「链路深度 N」），叶子带 `+` 号可继续点开。
+
+![全链路展开](https://raw.githubusercontent.com/elegant01/codegraph-view/main/docs/preview-trace.png)
+
+**深色主题**：默认跟随系统，头部胶囊里的 🌙/☀️ 可手动切换并记忆。
+
+![深色主题](https://raw.githubusercontent.com/elegant01/codegraph-view/main/docs/preview-dark.png)
+
+## 安装与使用
+
+**方式一：全局 npm 包（推荐，可分享）**
+
+```bash
+cd scripts/codegraph-viz
+npm pack                          # 生成 codegraph-view-1.0.0.tgz
+npm i -g ./codegraph-view-1.0.0.tgz
+```
+
+之后在任何**已用 codegraph 建好索引**的项目根目录：
+
+```bash
+cgv view          # 启动可视化，默认 39267 端口，浏览器打开 http://localhost:39267
+cgv view 3456     # 指定端口
+cgv view 3456 --host 0.0.0.0   # 允许局域网访问（默认仅 127.0.0.1，注意安全提示）
+cgv query xxx     # 其余命令全部等同 codegraph（init / callers / callees / node ...）
+cgv               # 查看帮助
+```
+
+- 需要 **Node ≥ 22.18**：`cgv view` 会加载 `lib/textparse.ts`，靠 Node 原生类型剥离直接执行（项目不做构建，原因见「为什么 `lib/` 里有 `.ts` 文件」）
+- 默认只监听 **127.0.0.1**（本机工具，防局域网访问你的源码）；需要分享时显式 `--host`
+- codegraph 本体作为依赖自动安装，**不需要单独装 codegraph**
+- 分享给别人：把 `codegraph-view-1.0.0.tgz` 发给对方，`npm i -g codegraph-view-1.0.0.tgz` 即可
+- 命令有两个名字：`cgv` 和 `codegraph-view`，效果一样
+
+**方式二：仓库内直接跑（开发用）**
+
+```bash
+node server.ts [端口]   # 默认 39267，退回用 PATH 里的 codegraph（需 Node ≥22.18）
+# 想先找个项目试手：仓库里带了一个假项目 examples/demo-app
+#   cd examples/demo-app && codegraph init && cgv view 39267
+```
+
+---
+
+## 界面分区
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ 顶部：搜索框 · 搜索 · 重置 · 面包屑 · 状态栏              │
+├──────────┬────────────────────────────────┬──────────────┤
+│ 左侧面板 │        中间：调用关系图         │  右侧：源码   │
+│ (文件/   │   调用者 ← [中心符号] → 被调用者 │              │
+│  搜索)   │                                │              │
+└──────────┴────────────────────────────────┴──────────────┘
+```
+
+### 左侧面板（两种模式二选一）
+
+**📁 文件浏览**（默认）
+- 按每个文件里被索引到的**符号总数**倒序排列（函数/类/方法/类型都算）
+- 每行前面的数字 = 该文件的符号数量
+- 顶部过滤框可按路径关键词筛选
+- 列表每页 200 个，底部「显示更多」增量加载，不再硬切上限
+- 默认隐藏噪音文件（`.min.js`、`node_modules`/`vendor`/`dist` 等），与画布右上角的「噪」开关共用同一套规则
+- **点文件** → 列出该文件里的所有符号；**点符号** → 画出调用关系图
+- 单文件符号列表受 codegraph 上限影响最多显示前 200 个，超出时列表底部提示「共 N 个」，其余用顶部搜索直达
+- 左侧面板可像右侧源码一样**折叠/展开**（顶部「‹ / ›」按钮，或折叠后点击左侧竖条）
+
+**🔍 搜索结果**
+- 在顶部搜索框输入符号名后出现
+- 标签是中文类型：方法 / 类 / 接口 / 类型 / 属性 / 变量 / 函数 / 路由
+- 点任意一条 → 画出它的调用关系图
+- **输入接口 URL**（如 `/api/activity/Sample/list`）→ 自动定位到对应 `route.ts` 接口文件
+  - 支持 query 参数剥离（`/api/xxx?page=2` 同样能定位）
+  - 支持 Next.js 动态路由段通配（`/api/user/123` → 匹配 `[id]/route.ts`）
+  - **精确匹配无结果时自动模糊匹配**：输入部分片段（如 `/api/room`）会列出所有包含该片段的 Laravel 路由 / `route.ts` 文件
+- 每条结果右侧的 **「⧉ 链路」** 按钮 → 递归展开它调用的**全部方法链**（只向下，一次画成整棵调用树）；**Shift+点击** → 向上展开**谁调用了它**（影响面分析）
+
+### 搜索增强
+
+- **类型过滤**：搜索框右侧下拉，只匹配方法/函数/类/接口/属性等
+- **正则模式**：勾选「正则」后搜索词按正则匹配（如 `get.*List`）
+- **最近搜索**：输入框下拉自动提示最近 12 条搜索（localStorage）
+
+### 按项目类型查询
+
+**Next.js / TypeScript**
+- 符号名搜索：`getItemList`、`searchAudit`
+- 接口 URL：`/api/media/audit` → 定位 `src/app/api/media/audit/route.ts`
+- 页面路径：`/video` → 定位 `src/app/(admin)/video/page.tsx`（自动忽略 `(admin)` 等路由组）
+- 动态段：`/api/system/config/123` → 匹配 `[id]/route.ts`；`/group/123` → 匹配页面 `[id]`
+- 模糊：输入部分片段（如 `/api/media`、`/group/entry`）自动列出相关接口/页面
+
+**Go（beego / gin）**
+- 直接搜索函数/方法名：`Add`、`TypeList`、`GetList`
+- 从 HTTP handler（controller 方法）点「⧉ 链路」展开整条调用链
+- **beego 路由定位**：`/v1/item/add` → `ItemController@Add`（支持 `NewNamespace`/`NSNamespace` 嵌套前缀、`NSRouter`/`Router` 方法映射、`NSInclude` + `@router` 注解、内联处理器）
+- **gin 路由定位**：`/api/v1/item/list` → `itemCtl.List`（支持 `Group` 前缀、`ctl := &XxxController{}` 变量类型追踪、中间件链取末位处理器、匿名处理器定位到文件行号）
+- 动态段：`/user/123` 匹配 `:id` 通配；`/static/a/b.js` 匹配 `*filepath` 多段通配
+
+**PHP / Laravel**
+- 搜索方法名：`batchItems`、`multiList`
+- 路由 URL：`/api/group/multiList.json` 或 `shop/batchItems.json` → 定位到 `Controller@method`
+- 路由模糊：输入部分片段（如 `/shop/items`）列出所有相关路由
+- 支持 query 参数剥离（`?page=2` 不影响定位）；`{id}` 路由段自动通配
+
+**自定义框架（如 php-admin 的 ctlXxx.php）**
+- **自动探测，无需配置**：工具会扫描项目目录，自动识别 `control/` + `ctlXxx.php` + `funcXxx` 方法约定。输入真实后台 URL（如 `/php-admin/orderList.html`、`/php-admin/module/page.html`、`/php-admin/module/List-index.html`）自动定位到对应方法并画图/展开链路
+- 自动探测覆盖的约定：
+  - 控制器目录：`control/`（含子目录做模块分组）
+  - 文件命名：`ctl<Controller>.php` 或模块前缀 `ctl<Module><Controller>.php`（如 `module/page.html` → `control/module/ctlModulePage.php`）
+  - 方法命名：`func<Method>`（`List-index` → `funcIndex`），URL 无方法段默认 `funcIndex`，方法不存在时回退文件第一个 `func` 方法
+- **配置文件可选**：只有当个别 URL 命名不规则、自动探测匹配不到时，才需要 `codegraph.route.json`，且只需写 `overrides` 特例（几乎零维护）：
+
+```json
+{
+  "overrides": {
+    "/php-admin/data/data.html": "control/data/ctlRank.php::funcMonth"
+  }
+}
+```
+
+- 若自动探测不适用于你的框架（目录/前缀不同），可配完整规则（`patterns` 存在时会替代自动探测）：
+
+```json
+{
+  "basePath": "/php-admin",
+  "patterns": [
+    "/{module}/{controller}-{method}.html",
+    "/{module}/{controller}.html",
+    "/{controller}-{method}.html",
+    "/{controller}.html"
+  ],
+  "defaultMethod": "index",
+  "controller": { "dir": "control", "prefix": "ctl", "ext": ".php", "trySubdir": true },
+  "method": { "prefix": "func", "capitalize": true }
+}
+```
+
+- 字段说明：
+  - `basePath`：URL 公共前缀（如 `/php-admin`），匹配前剥除
+  - `patterns`：URL 模式列表，按顺序尝试；`{module}`/`{controller}`/`{method}` 为通配段
+  - `defaultMethod`：URL 无方法段时的默认方法（映射时自动加前缀）
+  - `controller`：控制器文件规则 —— `dir` 目录、`prefix` 类前缀（ctl）、`ext` 扩展名、`trySubdir` 是否优先试 `<dir>/<module>/` 再回退 `<dir>/`
+  - `method`：方法命名规则 —— `prefix`（func）、`capitalize` 首字母大写
+  - `overrides`：规则匹配不到的例外 URL，直接映射到 `文件::方法`
+
+### 多 git workspace（聚合仓库模式）
+
+一个项目根目录下可能**嵌套多个独立 git 仓库**（git submodule / 嵌套仓库），例如 monorepo：
+
+```
+monorepo/                      ← 聚合根目录（.git）
+├── modules/                  ← 业务模块（每个模块都是独立 .git）
+│   ├── Api/    (.git)
+│   ├── Admin/(.git)
+│   ├── Mobile/ (.git)
+│   └── Web/    (.git)
+├── packages/                 ← 工具包（独立 .git）
+│   ├── tools/  (.git)
+│   └── logger/ (.git)
+├── services/   (.git)
+└── vendor/
+```
+
+**在聚合根目录启动一次即可**，工具自动覆盖所有嵌套 git 仓库的代码：
+
+```bash
+cd /path/to/monorepo
+# 关键：codegraph 默认忽略嵌套 git 仓库，需用 codegraph.json 显式包含
+# （monorepo 即通过 includeIgnored 把 modules/、services/ 纳入索引）
+echo '{ "includeIgnored": ["modules/", "services/"] }' > codegraph.json
+codegraph init   # 索引包含全部子仓库代码
+cgv view 4001    # 搜索/调用图/链路对 modules、packages、services 里的代码都生效
+```
+
+- 嵌套仓库无需各自建索引或各自启动服务——索引和定位都按整个目录工作（monorepo 的 `batchItems` 位于 `modules/Api/Http/Controllers/...`，在聚合根目录可直接搜到）
+- 自定义框架的 `codegraph.route.json`（如需 overrides）同样放在聚合根目录，对所有子仓库统一生效
+- 平级且互不嵌套的独立项目（如 php-admin、nextjs-app、go-service）才需要分别在各自根目录启动：
+
+```bash
+cd /path/to/php-admin  && cgv view 4002   # PHP 自定义框架
+cd /path/to/nextjs-app && cgv view 3999   # Next.js
+cd /path/to/go-service && cgv view 4000   # Go
+```
+
+### 中间：调用关系图
+
+以某个符号为中心，画出它的直接调用关系：
+
+| 位置 | 含义 | 颜色 |
+|------|------|------|
+| 中心 | 当前选中的符号 | 金色 |
+| 左边 | **调用者** —— 谁调用了它 | 绿色 |
+| 右边 | **被调用者** —— 它调用了谁 | 蓝色 |
+
+- 连线上的**箭头**表示调用方向
+- 左下角有固定**图例**
+- 列标题直接写明「调用者（谁调用了它）」「被调用者（它调用了谁）」
+
+### 右侧：源码
+显示当前符号的源码、所在文件、调用关系 Trail。点中心节点可重新定位到这里。
+
+---
+
+## 交互操作
+
+| 操作 | 效果 |
+|------|------|
+| **滚轮** | 缩放图 |
+| **拖拽空白处** | 平移图 |
+| **拖动卡片** | 自由摆放节点位置（重开图/重置后恢复自动布局） |
+| **＋ / － / ⟲** | 放大 / 缩小 / 重置视图（底部居中悬浮控制栏） |
+| **点击右侧节点** | 向下展开「它调用的」；**点击左侧节点**向上展开「谁调它」——旁路调用不会混入当前流程 |
+| **双击节点** | 以它为中心重开一张双向调用图 |
+| **右键节点** | 以此为中心 / 强制展开下层 / 强制展开上层 / 复制路径 / 在编辑器打开 |
+| **悬浮节点** | 弹出代码预览浮层，鼠标可移入滚动/复制；同时高亮该节点的**整条可达链**（上游沿「谁调用了它」、下游沿「它调用了谁」分别有向 BFS 后取并集）——链内保持清晰，其余淡出 |
+| **点击节点** | 展开它的调用关系，并把上面这条链路高亮**固定**住（移开鼠标不清除） |
+| **点击中心节点** | 右侧悬浮面板定位到它的源码 |
+| **↩ 撤销展开** | 撤销最近一次点击节点展开，回到展开前状态（可多级撤销） |
+| **⇈ 上游链** | 以当前中心为终点，向上递归展开「谁调用了它」（影响面分析） |
+| **⇢ 路径** | 依次点击两个节点，高亮它们之间的调用路径（Esc 退出） |
+| **🔥 热点** | 切换热点视图：节点卡片大小按**入度**（被调用次数）缩放，一眼看出哪些是核心函数；再点一次关闭 |
+| **⎘ 堆栈定位** | 粘贴报错堆栈，按 `文件:行号[:列]` 定位到对应符号并打开调用图（支持 TS/JS、Python、Go、Java、Rust、PHP、Vue 等常见堆栈格式；`node_modules`/`vendor`/`dist`/`build` 里的外部帧自动略过，最多取 50 帧） |
+| **⌘K / Ctrl+K** | 打开命令面板：输入即过滤，↑↓ 选择、Enter 执行（聚焦搜索框 / 展开上游链 / 启动路径查找 / 粘贴堆栈 / 复制分享链接 / 切换主题 / 切换噪音节点 / 重置画布 / 重新索引 / 打开使用说明） |
+| **❓ 帮助** | 打开使用说明弹窗，里面「试一试」按钮会一键跑一次演示 |
+| **取消展开** | 全链路展开中可随时点「取消」，后端同步终止 |
+| **噪音节点开关** | 关闭时过滤压缩混淆文件（.min.js）、依赖目录（node_modules/vendor）、编译产物（dist/build/out）、外部引入（external/third_party）等噪音节点，打开则全部显示 |
+| **✦ 节点类型过滤** | 只显示指定类型的节点（方法 / 函数 / 类 / 路由），其余隐藏（中心节点始终显示） |
+| **✦ 高亮节点** | 输入关键词，匹配的节点保持清晰、其余降低透明度；重开图后仍然生效，Esc 清空 |
+| **快捷键** | `u` 撤销展开 · `r` 重置 · `/` 聚焦搜索框 |
+| **面包屑** | 顶部显示浏览路径，可点回任意一步 |
+| **重置** | 清空历史与画布，回到初始状态 |
+| **链接分享** | 当前图状态自动写入地址栏 hash，复制链接即可分享，刷新自动恢复 |
+| **索引过期提示** | 后台 watch 项目目录并按文件内容哈希甄别真实变更，改码后画布顶部浮出胶囊提示重新索引 |
+
+### 图面辅助
+
+- **橙色虚线边** = 回边（调用环/回调），快速发现循环依赖
+- **右下角 minimap** = 迷你卡片缩略图（≥4 节点即显示），显示当前视口位置，点击跳转
+- **导出** = SVG / PNG / JSON / Mermaid 四种格式（Mermaid 可嵌入 Markdown 文档）
+- **源码面板** = 悬浮于画布之上（可折叠成胶囊），语法高亮（TS/Go/PHP 通用近似着色）+ 一键复制源码/路径
+- **主题** = 默认跟随系统深浅色，头部胶囊里的 🌙/☀️ 可手动切换并记忆
+
+### 同时看多个项目（▣ 项目）
+
+给几个项目各起一个 `cgv view`（不同端口）时，用底部「▣ 项目」把它们的地址存下来（存 localStorage，最多 12 条）：
+点「打开」直接跳过去，当前所在的项目会标「· 当前」，✕ 删除。
+
+## 状态栏（搜索框右侧）
+实时显示当前上下文：文件统计 / 搜索结果数 / 当前符号的调用者·被调用者数量。
+
+---
+
+## 架构
+
+- `bin/cgv.ts`：命令分发器 —— `view` 启动可视化服务，其余参数原样转发给包内依赖的 codegraph
+- `server.ts`：node:http 静态服务 + API 层（缓存、gzip、SSE、并发限流、reindex 互斥、索引过期 watch；哈希基线异步分批建，不阻塞事件循环）
+- `lib/*.ts`：可测试的纯逻辑模块（**真 TypeScript，但零构建**，见下）—— `validate`（输入校验/shell 安全）· `proc`（子进程执行器）· `textparse`（CLI 输出契约层）· `routes`（Laravel 路由解析）· `urlmap`（自定义框架 URL 定位）· `sourcecalls`（源码级动态调用补全）· `trace`（全链路 BFS，双向可取消）
+- `public/index.html`：单页前端，纯 SVG 画图，无任何框架/依赖
+
+API：
+- `GET /api/search?q=&kind=&regex=` → 符号搜索（类型过滤 / 正则）
+- `GET /api/graph?symbol=&file=` → 某符号的 callers + callees + 源码（30s 缓存，键 = symbol+file）
+- `GET /api/trace/stream?symbol=&file=&depth=&maxNodes=&direction=` → 递归展开调用链的 SSE 流式接口；发送 `progress` 事件报告进度，发送 `result` 事件返回 `{ nodes, edges, direction }`，客户端断开即自动取消；同一组参数 60s 内重复展开直接回放结果（取消产生的部分结果不缓存）
+- `GET /api/status` → 索引过期提示 / 运行信息（含 `root` 项目根绝对路径，前端据此把相对文件路径补成绝对路径，供「在编辑器打开」使用）
+- `GET /api/symbols?file=` → 某文件内的符号列表（60s 缓存 + 同文件并发合流；该接口单次要跑一次 codegraph，大文件可达数十秒）
+- `GET /api/files` → 全部文件（含符号数）
+
+安全：
+- 默认仅监听 127.0.0.1；`--host` 暴露时启动有警告
+- 参数经 `safeArg`（拒绝全部控制字符）/`safeFile`（防路径穿越）校验
+- Windows `.cmd` shell 路径额外拦截 cmd 元字符（& | % ^ 等）
+- 静态目录用 `path.relative` 判定，防前缀绕过
+- reindex single-flight + 冷却，防并发写坏索引
+
+测试与类型检查：
+```bash
+npm test          # 单元测试（lib 纯函数 + CLI 输出契约）+ 服务端集成测试 + 前端测试（node:vm）
+npm run typecheck # TypeScript 类型检查（checkJs，零构建，仅检查不产出）
+npm run e2e       # 端到端冒烟（对存在的 fixture 项目起服务验证 API）
+                  # fixture 列表读 scripts/fixtures.local.json（自己复制 .example.json 改）；也可直接传目录：
+                  #   node scripts/e2e.ts /path/to/your-project
+```
+
+> 类型检查说明：项目**不需要构建**。后端（`server.ts` / `bin/*.ts` / `lib/*.ts` / `scripts/*.ts`）
+> 是真 TypeScript，前端 `public/app.js` 与测试 `test/*.test.mjs` 由 `checkJs` 覆盖；
+> 工具链只做静态分析、不产出任何文件。
+> **`strict` 全量开启**：无隐式 any、无显式 any，`strictNullChecks` 与
+> `useUnknownInCatchVariables` 也全开。CLI 输出这类不可信边界用泛型
+> `parseJson<T>(raw, fallback)` + 契约类型（`SymbolNode` / `NeighborsPayload` …）在调用处声明形状；
+> catch 变量统一走 `errMsg(e)`（后端 `lib/err.ts`，前端本地一份）。可空性逐处梳理过：
+> 能加守卫的加守卫，必要的断言集中在少数几处并写明理由。
+> 迁移进度与路线记录在本地内部文档中（不随本仓库分发）。
+
+### 为什么后端是 `.ts`？
+
+`server.ts` / `lib/*.ts` / `bin/*.ts` 都是**真 TypeScript，但不经过任何构建**——Node（≥22.18）
+原生剥离类型后直接执行，`server.ts` 里照常 `import './lib/trace.ts'`。得到的是类型本身的价值：
+契约类型定义在 `lib/textparse.ts`（`SymbolNode` / `TrailEntry` 等「codegraph CLI 输出 → 内部结构」
+的唯一转换点），而 `Runner` / `RouteEntry` / `SymbolResolver` / `TraceResult` / `TraceContext`
+等接口让各模块之间、以及 `server.ts` 里的 handler 与缓存都能被校验到字段名与形状
+（`server.ts` 还定义了 `GraphPayload` / `SymbolsPayload` 等 API 出参契约）。
+
+测试文件保持 `.test.mjs`：`node --test` 的自动发现只认 `*.test.?(c|m)js`，改成 `.ts`
+有「测试被静默跳过」的风险；它们照样由 `checkJs` 检查，也能直接 `import` `.ts` 模块。
+
+为此有两条硬约束：
+
+- 语法必须**可擦除**（不能用 `enum` / `namespace` / 构造函数参数属性），由 tsconfig 的
+  `erasableSyntaxOnly` 强制；
+- 因此 **`cgv view` 要求 Node ≥ 22.18**（`cgv <其他命令>` 只转发给 codegraph，不受影响）。
+  `bin/cgv.ts` 会在版本不足时给出明确提示，而不是抛 `ERR_UNKNOWN_FILE_EXTENSION`。
+
+选这条路而不是 `tsc` 编译到 `dist/`，是为了保住项目从第一天起就有的「改完直接
+`node server.ts` 就能跑」——真 `.ts` 与零构建并不冲突。

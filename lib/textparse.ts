@@ -3,7 +3,7 @@
 // 为什么这个文件是 .ts：它是「外部 CLI 输出 → 内部结构」的唯一转换点，契约类型定义在这里，
 // 下游 server.ts / trace.ts / routes.ts / sourcecalls.ts 就能被校验到字段名与形状。
 // 运行时不需要任何构建：Node ≥22.18 原生剥离类型后直接执行（只允许可擦除语法，见 tsconfig 的
-// erasableSyntaxOnly）。其余模块直接 `import './textparse.ts'` 即可，见 README「为什么后端是 .ts」。
+// erasableSyntaxOnly）。其余模块直接 `import './textparse.ts'` 即可，见 README「Why is the backend .ts?」。
 
 /** codegraph 索引里的一个符号节点（`query` / `callers` / `callees --json` 的元素形状） */
 export interface SymbolNode {

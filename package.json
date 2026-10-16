@@ -1,8 +1,12 @@
 {
   "name": "codegraph-view",
   "version": "1.2.0",
-  "description": "CodeGraph CLI + 交互式调用关系可视化（codegraph 全部命令 + view 子命令）",
+  "description": "Interactive call-graph visualizer for a CodeGraph index — bundles every codegraph command plus a `view` subcommand",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elegant01/codegraph-view.git"
+  },
   "bin": {
     "cgv": "bin/cgv.ts",
     "codegraph-view": "bin/cgv.ts"
@@ -27,7 +31,8 @@
     "lib",
     "server.ts",
     "public",
-    "README.md"
+    "README.md",
+    "README.zh-CN.md"
   ],
   "engines": {
     "node": ">=22.18"
