@@ -8,10 +8,12 @@
     "url": "git+https://github.com/elegant01/codegraph-view.git"
   },
   "bin": {
-    "cgv": "bin/cgv.ts",
-    "codegraph-view": "bin/cgv.ts"
+    "cgv": "dist/bin/cgv.js",
+    "codegraph-view": "dist/bin/cgv.js"
   },
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "prepare": "npm run build",
     "test": "node --test",
     "typecheck": "tsc --noEmit",
     "e2e": "node scripts/e2e.ts"
@@ -27,10 +29,7 @@
     "@colbymchenry/codegraph": "1.5.0"
   },
   "files": [
-    "bin",
-    "lib",
-    "server.ts",
-    "public",
+    "dist",
     "README.md",
     "README.zh-CN.md"
   ],

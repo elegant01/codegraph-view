@@ -4,7 +4,7 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readFile, stat as fsStat, readdir } from 'node:fs/promises';
-import { watch, readFileSync } from 'node:fs';
+import { watch, readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +50,10 @@ interface FileInfo { path: string; nodeCount: number }
 const ROOT = process.cwd(); // 项目根目录（codegraph 索引所在）
 const ROOT_NAME = ROOT.split(/[\\/]/).filter(Boolean).pop() || 'root';
 const PKG = fileURLToPath(new URL('.', import.meta.url));
+// 包根（bundled codegraph 所在的 node_modules 的父目录）：源码布局 server.ts 就在包根下，
+// 编译布局是 dist/server.js、包根在上一级 —— 用「本目录有没有 package.json」判定，两种布局都不用特判。
+// 注意 PUB 用的是 PKG（编译后是 dist/public，构建脚本已把 public/ 拷进去），不是 PKG_ROOT。
+const PKG_ROOT = existsSync(join(PKG, 'package.json')) ? PKG : join(PKG, '..');
 
 // 发现聚合根目录下的嵌套 Git 仓库；只返回相对路径，供前端给节点打仓库标签
 let repoCache: RepoInfo[] | null = null;
@@ -90,7 +94,7 @@ const JSON_OUT = argv.includes('--json');
 // --read-only：只读分享模式，禁用 reindex 等写操作接口，可安全部署到公共地址
 const READ_ONLY = argv.includes('--read-only');
 
-const { run, useBundled } = createRunner({ root: ROOT, pkgDir: PKG });
+const { run, useBundled } = createRunner({ root: ROOT, pkgDir: PKG_ROOT });
 const routeParser = createRouteParser({ root: ROOT, run });
 const urlMapper = createUrlMapper({ root: ROOT });
 const symbolResolver = createSymbolResolver({ run, root: ROOT });

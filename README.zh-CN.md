@@ -32,6 +32,11 @@ npm pack                          # 在仓库根目录执行，生成 codegraph-
 npm i -g ./codegraph-view-<版本号>.tgz
 ```
 
+`npm pack` / `npm publish` 会触发 `prepare` 钩子，把 `bin/`、`lib/`、`server.ts` 编译进 `dist/`
+（并把 `public/` 拷到 `dist/public/`）——**发出去的是编译后的 JS，不是 `.ts`**。这不是偏好问题：
+Node 不对 `node_modules` 下的文件做类型剥离（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，
+既定行为、没有 flag 能放开），所以 `bin` 指向 `.ts` 的包一装上就崩。开发流程仍然零构建，见下面「为什么后端是 `.ts`」。
+
 之后在任何**已用 codegraph 建好索引**的项目根目录：
 
 ```bash
@@ -292,6 +297,7 @@ API：
 
 测试与类型检查：
 ```bash
+npm run build     # 编译 bin/lib/server.ts → dist/（npm 包实际分发的内容）
 npm test          # 单元测试（lib 纯函数 + CLI 输出契约）+ 服务端集成测试 + 前端测试（node:vm）
 npm run typecheck # TypeScript 类型检查（checkJs，零构建，仅检查不产出）
 npm run e2e       # 端到端冒烟（对存在的 fixture 项目起服务验证 API）
@@ -330,3 +336,10 @@ npm run e2e       # 端到端冒烟（对存在的 fixture 项目起服务验证
 
 选这条路而不是 `tsc` 编译到 `dist/`，是为了保住项目从第一天起就有的「改完直接
 `node server.ts` 就能跑」——真 `.ts` 与零构建并不冲突。
+
+**零构建的边界在 npm。** Node 的类型剥离不作用于 `node_modules` 下的文件
+（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，是既定行为，没有 flag 能放开），
+所以 `bin` 指向 `bin/cgv.ts` 的包一装上、第一行就崩。因此发布出去的 tarball 里是编译好的 `.js`
+（`npm run build` → `dist/`，挂在 `prepare` 钩子上，靠 `rewriteRelativeImportExtensions`
+把源码里的 `import './lib/trace.ts'` 改写成 `./lib/trace.js`）。仓库本身依旧零构建，
+只有 `npm pack` / `npm publish` / 从 git 安装这三条路径会编译。

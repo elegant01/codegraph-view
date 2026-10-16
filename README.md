@@ -34,6 +34,12 @@ npm pack                          # run from the repo root; produces codegraph-v
 npm i -g ./codegraph-view-<version>.tgz
 ```
 
+`npm pack` / `npm publish` run the `prepare` hook, which compiles `bin/`, `lib/` and `server.ts` into
+`dist/` (and copies `public/` into `dist/public/`) — **what ships is compiled JavaScript, not `.ts`**.
+That is not a preference: Node refuses to strip types for any file under `node_modules`
+(`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, by design, no flag lifts it), so a package whose `bin`
+is a `.ts` file crashes on install. Development is still build-free — see "Why is the backend `.ts`?".
+
 Then, from the root of any project **already indexed by codegraph**:
 
 ```bash
@@ -295,6 +301,7 @@ Security:
 
 Tests and type checking:
 ```bash
+npm run build     # compile bin/lib/server.ts → dist/ (the only thing npm pack ships)
 npm test          # unit tests (pure lib functions + CLI output contracts) + server integration tests + frontend tests (node:vm)
 npm run typecheck # TypeScript checking (checkJs, zero build, checks only)
 npm run e2e       # end-to-end smoke test (starts the server against any fixture projects that exist)
@@ -336,3 +343,10 @@ That comes with two hard constraints:
 
 This route was chosen over compiling with `tsc` into `dist/` to keep what the project has had from day one:
 edit the code and `node server.ts` just runs — real `.ts` and zero build are not in conflict.
+
+**Where the build-free story stops: npm.** Node's type stripping does not apply to files under
+`node_modules` — `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`, deliberate and not overridable by any flag —
+so an installed package whose `bin` is `bin/cgv.ts` dies on the first line it executes. The published
+tarball therefore contains compiled `.js` (`npm run build` → `dist/`, wired into the `prepare` hook, with
+`rewriteRelativeImportExtensions` turning the source's `import './lib/trace.ts'` into `./lib/trace.js`).
+The repo itself stays build-free; only `npm pack` / `npm publish` / a git install compile anything.

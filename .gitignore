@@ -16,3 +16,6 @@ scripts/fixtures.local.json
 
 # 示例项目的索引（各人本地 codegraph init 生成）
 examples/*/.codegraph/
+
+# 打包产物（npm pack / publish 时由 prepare 钩子生成）
+dist/

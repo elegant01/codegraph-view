@@ -1,0 +1,27 @@
+{
+  // 仅用于「打包/发布」的编译配置：把 bin / lib / server.ts 编译成 dist/ 下的 .js。
+  //
+  // 为什么发布必须编译：Node 只对 node_modules 之外的文件做原生类型剥离，
+  // 装在 node_modules 里的 .ts 一律抛 ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING
+  // （Node 的既定行为，没有任何 flag 能放开）。仓库内的开发流程不受影响，
+  // 照旧 `node server.ts` 直接跑 .ts —— 编译只发生在 npm pack / npm publish 那一刻。
+  //
+  // 与 dev 配置（tsconfig.json）的关键差异：
+  //   - 要产出：noEmit: false
+  //   - 不再检查前端/测试的 JS：checkJs: false, allowJs: false
+  //   - 相对导入里的 .ts 后缀由 rewriteRelativeImportExtensions 改写成 .js
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "checkJs": false,
+    "allowJs": false,
+    "allowImportingTsExtensions": false,
+    "rewriteRelativeImportExtensions": true,
+    "outDir": "dist",
+    "rootDir": ".",
+    "declaration": false,
+    "sourceMap": false,
+    "types": ["node"]
+  },
+  "include": ["server.ts", "bin/**/*.ts", "lib/**/*.ts"]
+}
