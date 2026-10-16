@@ -2,6 +2,25 @@
 
 把 CodeGraph 索引的**代码符号调用关系**画成可交互的图，并集成了 codegraph 的全部命令。
 
+## 界面预览
+
+以某个方法为中心画它的调用关系：左边绿色是**调用者**、右边蓝色是**被调用者**，中间金色是当前符号。
+（以下截图取自仓库内的示例项目 `examples/demo-app`，可自行跑起来复现。）
+
+![调用关系图](https://raw.githubusercontent.com/elegant01/codegraph-view/main/docs/preview-graph.png)
+
+**接口 URL 定位**：直接输入接口地址（如 `/api/media/audit`），落到对应的 `route.ts`；点「⧉ 链路」展开它调用的整棵调用树。
+
+![接口 URL 定位](https://raw.githubusercontent.com/elegant01/codegraph-view/main/docs/preview-route.png)
+
+**全链路展开**：一次画出多层调用链（状态栏显示「链路深度 N」），叶子带 `+` 号可继续点开。
+
+![全链路展开](https://raw.githubusercontent.com/elegant01/codegraph-view/main/docs/preview-trace.png)
+
+**深色主题**：默认跟随系统，头部胶囊里的 🌙/☀️ 可手动切换并记忆。
+
+![深色主题](https://raw.githubusercontent.com/elegant01/codegraph-view/main/docs/preview-dark.png)
+
 ## 安装与使用
 
 **方式一：全局 npm 包（推荐，可分享）**
@@ -32,6 +51,8 @@ cgv               # 查看帮助
 
 ```bash
 node server.ts [端口]   # 默认 39267，退回用 PATH 里的 codegraph（需 Node ≥22.18）
+# 想先找个项目试手：仓库里带了一个假项目 examples/demo-app
+#   cd examples/demo-app && codegraph init && cgv view 39267
 ```
 
 ---
@@ -261,6 +282,8 @@ API：
 npm test          # 单元测试（lib 纯函数 + CLI 输出契约）+ 服务端集成测试 + 前端测试（node:vm）
 npm run typecheck # TypeScript 类型检查（checkJs，零构建，仅检查不产出）
 npm run e2e       # 端到端冒烟（对存在的 fixture 项目起服务验证 API）
+                  # fixture 列表读 scripts/fixtures.local.json（自己复制 .example.json 改）；也可直接传目录：
+                  #   node scripts/e2e.ts /path/to/your-project
 ```
 
 > 类型检查说明：项目**不需要构建**。后端（`server.ts` / `bin/*.ts` / `lib/*.ts` / `scripts/*.ts`）

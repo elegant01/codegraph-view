@@ -13,3 +13,6 @@ server-preview*.log
 TEST_CASES.md
 TODO.md
 scripts/fixtures.local.json
+
+# 示例项目的索引（各人本地 codegraph init 生成）
+examples/*/.codegraph/
